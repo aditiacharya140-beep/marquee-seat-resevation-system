@@ -15,7 +15,7 @@ Every response, success or failure, carries `X-Request-ID`. Every failure uses t
 | `POST` | `/auth/refresh` | user, admin | no | `auth` | `auth.py` |
 | `GET` | `/auth/me` | any principal | yes | `read` | `auth.py` |
 | `POST` | `/shows` | admin | key optional | `admin` | `shows.py` |
-| `GET` | `/shows` | public | yes | `read` | `shows.py` |
+| `GET` | `/shows` | public | yes | `read` | *deferred, ADR-015* |
 | `GET` | `/shows/{show_id}` | public | yes | `read` | `shows.py` |
 | `POST` | `/shows/{show_id}/reserve` | any principal | **key required** | `reserve` | `reservations.py` |
 | `POST` | `/reservations/{id}/confirm` | owner | yes | `reserve` | `reservations.py` |
@@ -153,7 +153,10 @@ A seat whose hold has lapsed but has not been swept reports `available`, matchin
 
 `404 SHOW_NOT_FOUND`
 
-### `GET /shows`
+### `GET /shows` — deferred (ADR-015)
+
+Not built. Nothing depends on a paginated catalogue, and deferring it keeps the cursor codec off the critical path. Shape when it lands:
+
 
 Query: `limit`, `cursor`, `status`, `event_kind`. **200**
 ```json

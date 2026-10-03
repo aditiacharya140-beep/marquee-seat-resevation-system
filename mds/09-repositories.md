@@ -45,10 +45,9 @@ get_show(show_id)                   -> Show | None
 get_show_for_sale(show_id)          -> Show | None
 get_counts(show_id)                 -> SeatCounts
 list_seats(show_id)                 -> list[Seat]
-list_shows(cursor, limit, filters)  -> Page[ShowSummary]
 ```
 
-`create_show` inserts seats with one multi-row statement — a loop of inserts for a 2,000-seat hall is 2,000 round trips. `get_counts` is the single-snapshot query from [03-data-model.md](03-data-model.md), which is what makes the reconciliation invariant hold by construction. `list_shows` never scans seats; it reads precomputed counts per show.
+`create_show` inserts seats with one multi-row statement — a loop of inserts for a 2,000-seat hall is 2,000 round trips. `get_counts` is the single-snapshot query from [03-data-model.md](03-data-model.md), which is what makes the reconciliation invariant hold by construction. The paginated `list_shows` is deferred (ADR-015); nothing depends on it, so the cursor codec is not built yet.
 
 ### `seat_repo.py`
 

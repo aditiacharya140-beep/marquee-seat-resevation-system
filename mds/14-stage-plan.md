@@ -42,10 +42,10 @@ Argon2 hashing in a bounded executor. JWT encode/decode with `typ` checks. Regis
 
 ## Stage 3 — Shows and seats
 
-Migrations for `events`, `shows`, `seats` with every constraint and index from [03-data-model.md](03-data-model.md). The effective-status expression in `db/sql.py`, defined once. `POST /shows` admin-only, show plus seats in one transaction, multi-row insert. `GET /shows/{id}` with the single-snapshot counts query. `GET /shows`.
+Migrations for `shows`, `seats` with every constraint and index from [03-data-model.md](03-data-model.md). The effective-status expression in `db/sql.py`, defined once. `POST /shows` admin-only, show plus seats in one transaction, multi-row insert. `GET /shows/{id}` with the single-snapshot counts query. `GET /shows`.
 
 **Exit:** show creation is atomic and rejects duplicate labels; counts satisfy the invariant; admin-only enforced; `ck_seats_hold_coherent` rejects an incoherent write.
-**Covers:** REQ-010 – REQ-014.
+**Covers:** REQ-010 – REQ-013 (REQ-014 deferred, ADR-015).
 
 ## Stage 4 — The atomic claim
 

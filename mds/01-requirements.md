@@ -49,7 +49,7 @@ Duplicate labels in `seats[]`, an empty `seats[]`, a non-integer or negative `pr
 **REQ-013** `M` `system` — Reconciliation invariant.
 At every instant, including during a burst, `available + held + confirmed == total_seats` for every show. Verified by sampling `GET /shows/{id}` concurrently with load, not only after it.
 
-**REQ-014** `S` `user` — List shows.
+**REQ-014** `C` `user` — List shows. **Deferred (ADR-015)** — nothing depends on it; revisit after Stage 7.
 `GET /shows` returns a paginated summary with availability counts. Page size is configured, not hardcoded, and bounded.
 
 ---
@@ -122,7 +122,7 @@ A seat released by cancel or expiry can be reserved by any principal with no res
 `GET /readyz` executes a real query against the database. With the database unreachable it returns 503 with the failing dependency named. It never reports ready on a cached result.
 
 **REQ-042** `M` `system` — Metrics.
-`GET /metrics` exposes Prometheus text format including: reservations confirmed (counter), reservations declined by reason (counter, labelled `seat_taken` / `per_user_limit` / `idempotent_replay` / `show_not_on_sale` / `lock_timeout`), seats available (gauge, labelled by show), request latency (histogram by route and status), and audit queue depth and drops.
+`GET /metrics` exposes Prometheus text format including: reservations confirmed (counter), reservations declined by reason (counter, labelled `seat_taken` / `per_user_limit` / `idempotent_replay` / `show_not_on_sale` / `lock_timeout`), seats available (gauge, labelled by show), request latency (histogram by route and status), audit queue depth and drops, and three operational series without which other requirements cannot be verified: `unhandled_exceptions_total` (the direct measurement of REQ-048), `db_pool_waiting` (the precursor to a 503), and `seat_claim_lock_wait_seconds` (hot-seat contention approaching `lock_timeout`).
 
 **REQ-043** `M` `system` — Metrics reconcile.
 Counter and gauge values agree with API state and with the database after a burst, within the gauge's refresh interval.
@@ -140,7 +140,7 @@ Every request is recorded to an audit table through a bounded in-memory queue dr
 Per-principal limits apply, configured per route class via environment variables with no redeploy required to change a ceiling. The reserve path's ceiling is set so that a legitimate on-sale stampede of distinct principals is never throttled. Exceeding a limit returns 429 with `Retry-After` and is counted.
 
 **REQ-048** `M` `system` — No 5xx on domain paths.
-Across a sustained burst, zero 5xx responses. Pool exhaustion, lock timeout, and driver errors on the claim path are translated to 4xx or retried within the request, never surfaced as 500.
+Zero 5xx on every domain path. Lock timeouts, serialization failures, and driver errors on the claim path are translated to 4xx or retried within the request, never surfaced as 500. The one permitted 5xx is 503 `DATABASE_UNAVAILABLE` when the database is genuinely unreachable; **zero occurrences of it are required during a burst**, which makes pool sizing part of this requirement rather than a tuning detail. Measured directly by `unhandled_exceptions_total` remaining at zero.
 
 **REQ-049** `M` `system` — Cold start.
 After idle spin-down, the first request causes the service to come up and report healthy, and the burst script warms the target before measuring.

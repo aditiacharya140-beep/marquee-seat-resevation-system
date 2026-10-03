@@ -126,8 +126,8 @@ Cinema and concert differ only in data:
 
 | Variable | Carried by |
 |---|---|
-| Event kind | `events.kind`, free-form, validated against config |
-| Layout | `seats.section`, `row_label`, `seat_number`, all nullable; `label` is the canonical identity |
+| Event kind | `shows.event_kind`, free-form, validated against config |
+| Layout | `seats.section`, nullable; `label` is the canonical identity and the only one stored |
 | Pricing | `shows.price_paise` with per-seat `seats.price_paise` override |
 | Booking limit | `shows.per_user_limit` |
 | Hold duration | `shows.hold_ttl_seconds` |

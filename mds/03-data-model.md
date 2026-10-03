@@ -27,23 +27,12 @@ CREATE CHECK CONSTRAINT ck_users_creds
 
 The check constraint makes a half-upgraded guest unrepresentable. Upgrade is a single `UPDATE` setting all three columns at once.
 
-### `events`
-
-| Column | Type | Notes |
-|---|---|---|
-| `id` | `UUID` | PK |
-| `kind` | `TEXT` | `'cinema'`, `'concert'`, … validated against config, not a DB enum |
-| `name`, `venue` | `TEXT` | |
-| `created_at`, `request_id` | | |
-
-`kind` is `TEXT` rather than an enum deliberately: adding an event type must not require a migration.
-
 ### `shows`
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | `UUID` | PK |
-| `event_id` | `UUID` | FK `events`, nullable — a show may be created standalone |
+| `event_kind` | `TEXT` | `'cinema'`, `'concert'`, … validated against config, not a DB enum, so a new kind needs no migration |
 | `name` | `TEXT` | |
 | `price_paise` | `BIGINT` | `CHECK (price_paise >= 0)` |
 | `currency` | `CHAR(3)` | default `'INR'` |
@@ -65,7 +54,7 @@ The hot table. One row per seat per show, created once, never inserted or delete
 | `id` | `UUID` | PK |
 | `show_id` | `UUID` | FK `shows`, `ON DELETE CASCADE` |
 | `label` | `TEXT` | canonical seat identity within a show |
-| `section`, `row_label`, `seat_number` | `TEXT` | nullable layout metadata, never used for identity |
+| `section` | `TEXT` | nullable; groups seats for tiered pricing. Never used for identity |
 | `price_paise` | `BIGINT` | nullable; `NULL` inherits `shows.price_paise` |
 | `status` | `TEXT` | `CHECK (status IN ('available','held','confirmed'))` |
 | `held_by` | `UUID` | FK `users`, nullable |

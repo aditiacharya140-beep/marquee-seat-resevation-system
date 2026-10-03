@@ -313,3 +313,60 @@ Resolved and imported cleanly in one environment: FastAPI 0.115.6, Pydantic 2.10
 SQLAlchemy is present **only** so Alembic can run migrations. Runtime queries use raw asyncpg, per [09-repositories.md](09-repositories.md). No ORM model layer is to be introduced — an ORM would obscure the exact SQL the correctness argument depends on.
 
 **Implication** Versions are pinned exactly in `pyproject.toml` and the container base must be `python:3.13-slim` to match. A floating dependency is a build that works today and fails from a clean checkout later.
+
+---
+
+## ADR-013 — No `events` table; `event_kind` lives on `shows`
+
+**Date** 2026-10-03
+
+**Context** The original schema had `events` as a parent aggregate with `shows.event_id` as a nullable FK. Reviewing the ticket breakdown against the requirements showed that no requirement reads an event: REQ-010 creates a show with seats and a price, REQ-012 reads a show, and the nullable FK meant shows already had to work standalone.
+
+**Choice** Drop `events`. Carry `event_kind` as a validated `TEXT` column on `shows`.
+
+**Reasoning** A table nothing reads, reached through a nullable FK, is cost without benefit: an extra migration, an extra join, and an ambiguity about whether a show has a parent. The generic-across-verticals property that motivated it is preserved — cinema and concert remain configuration, not code paths — because that property was always carried by `event_kind` and never by the table.
+
+**Consequences** A future requirement for one event owning several shows (a festival, a film run) needs a migration to introduce the parent. Accepted: that migration is small and additive, and paying for it now buys nothing today.
+
+## ADR-014 — `seats` stores only `label` and `section`
+
+**Date** 2026-10-03
+
+**Context** `seats` carried nullable `section`, `row_label` and `seat_number` alongside `label`, which is the canonical identity. No requirement reads any of the three.
+
+**Choice** Keep `section`. Drop `row_label` and `seat_number`.
+
+**Reasoning** `section` earns its place by grouping seats for tiered pricing, which the API already exposes through `seat_overrides`. `row_label` and `seat_number` are derivable from `label` by a helper, so storing them duplicates state that can disagree with the label it was derived from — on the hottest table in the system, where every column is paid for on every claim.
+
+**Consequences** A seat-map response would need a label-parsing helper rather than three columns. Cheaper than keeping two unread columns coherent, and the parse has one source of truth.
+
+## ADR-015 — `GET /shows` deferred
+
+**Date** 2026-10-03
+
+**Context** REQ-014, a paginated show list, was priority `should`. It requires keyset pagination, an opaque cursor codec and per-show counts.
+
+**Choice** Defer it past Stage 7, and downgrade REQ-014 to `could`.
+
+**Reasoning** Nothing depends on it. The burst script creates its own show and addresses it by id, and `GET /shows/{id}` (REQ-012, a `must`) carries every state read the invariant checks need. Deferring removes `helpers/pagination.py`, the cursor codec and their tests from the critical path.
+
+**Consequences** No catalogue browse endpoint until it is built. The shape is documented in [06-apis.md](06-apis.md) so adding it later is mechanical.
+
+## ADR-016 — REQ-048 amended: zero 5xx on domain paths, 503 only on genuine unavailability
+
+**Date** 2026-10-03
+
+**Context** Decomposing the requirements surfaced a direct contradiction between two committed documents. REQ-048 demanded "zero 5xx responses" across a sustained burst, while [11-scalability.md](11-scalability.md) named 503 `DATABASE_UNAVAILABLE` on a pool-acquire timeout as "the single legitimate 5xx in the service". As written, a correct implementation could fail REQ-048 under pool pressure, and the requirement was unsatisfiable rather than merely demanding.
+
+**Options**
+1. Forbid 503 entirely — would mean queueing indefinitely or lying about readiness when the database is gone.
+2. Permit 503 freely — would gut the requirement, since any 5xx could be excused as pool pressure.
+3. Permit 503 only for genuine unavailability, and require zero occurrences during a burst.
+
+**Choice** Option 3. REQ-048 now reads: zero 5xx on every domain path; 503 `DATABASE_UNAVAILABLE` only when the database is genuinely unreachable; zero occurrences of it required during a burst.
+
+**Reasoning** This keeps the requirement falsifiable while leaving the honest failure mode available. It also makes explicit something that was previously implicit: **pool sizing is part of this requirement**, not a tuning detail, because an undersized pool converts load into 503s that the requirement now forbids.
+
+**Consequences** `unhandled_exceptions_total` must stay at zero through a burst and is the direct measurement, so it is added to REQ-042's required metric list alongside `db_pool_waiting` and `seat_claim_lock_wait_seconds`. The burst script reports 503s in their own column, separate from 4xx declines.
+
+**Found by** the requirements decomposition, before any code existed — which is the decomposition paying for itself.
