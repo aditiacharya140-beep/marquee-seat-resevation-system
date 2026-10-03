@@ -282,3 +282,34 @@ The Homebrew PostgreSQL 16 default is `max_connections = 100`. Per the pool arit
 A shell helper holding connection flags (`DB="-h localhost -U seatres …"`) expanded as a *single* argument under zsh, so `psql $DB` passed the whole string to `-h`. zsh, unlike bash, performs no word splitting on unquoted parameter expansion.
 
 **Implication** Any shell script in this repository — `burst.sh`, the container entrypoint, CI helpers — must not rely on bash word-splitting of flag-bearing variables. Use explicit arrays, `PG*` environment variables, or a `#!/usr/bin/env bash` shebang. The burst script is the one that matters: a silently misparsed base URL would make it measure the wrong target.
+
+## LEARN-005 — Barrier-synchronised concurrency tests deadlock on pool capacity
+
+**Date** 2026-10-03
+
+The first asyncpg contention probe hung indefinitely with no output. Cause: each of 50 tasks acquired a pooled connection **and then** waited on an `asyncio.Barrier(50)`, against a pool capped at 30. Thirty tasks held connections while waiting for a barrier that needed fifty; the remaining twenty blocked forever in `acquire()` on connections that would never be released. A resource-then-barrier deadlock, entirely in the test harness — the service under test was not involved.
+
+**Fix** Acquire every connection *before* the barrier, and size the pool above the participant count:
+
+```python
+conns = await asyncio.gather(*(pool.acquire() for _ in range(N)))   # all resources first
+barrier = asyncio.Barrier(N)                                        # then synchronise
+```
+
+**Implication for the test suite** This is a trap the concurrency tests in [12-testing-and-burst.md](12-testing-and-burst.md) will hit, because barrier synchronisation is exactly how they force genuine overlap. Three rules follow:
+
+1. Any barrier-synchronised test must acquire all scarce resources before the barrier, never inside it.
+2. Test pool size must exceed the participant count, and the participant count must stay under the server's `max_connections` (100 locally, LEARN-003) with headroom for the suite's other connections.
+3. A concurrency test that hangs is more likely a harness deadlock than a service defect. Check the harness before suspecting the claim path — and give every such test a hard timeout so a hang fails loudly instead of stalling a run.
+
+**Verified result after the fix** 50 barrier-synchronised asyncpg claimers on one seat: 1 won, 49 declined, 0 errors, exactly one held row. The mechanism holds through the real driver, not only through `psql`.
+
+## LEARN-006 — Stack versions validated together on Python 3.13
+
+**Date** 2026-10-03
+
+Resolved and imported cleanly in one environment: FastAPI 0.115.6, Pydantic 2.10.5, asyncpg 0.30.0, PyJWT 2.10.1, Alembic 1.14.1, SQLAlchemy 2.0.37, argon2-cffi, prometheus-client, on CPython 3.13.16. Argon2 hashing confirmed working, and asyncpg's C extension built without issue on arm64.
+
+SQLAlchemy is present **only** so Alembic can run migrations. Runtime queries use raw asyncpg, per [09-repositories.md](09-repositories.md). No ORM model layer is to be introduced — an ORM would obscure the exact SQL the correctness argument depends on.
+
+**Implication** Versions are pinned exactly in `pyproject.toml` and the container base must be `python:3.13-slim` to match. A floating dependency is a build that works today and fails from a clean checkout later.

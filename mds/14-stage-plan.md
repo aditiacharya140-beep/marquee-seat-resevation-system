@@ -116,7 +116,10 @@ Provisioned 2026-10-03. Versions are pinned here because the container must matc
 |---|---|---|
 | PostgreSQL | 16.15 | `brew install postgresql@16`, `brew services start postgresql@16` — keg-only, so `/opt/homebrew/opt/postgresql@16/bin` must be on `PATH` |
 | Python | 3.13.16 | `brew install python@3.13`; venv at `.venv` |
-| Docker | Colima + Docker CLI | `brew install colima docker docker-compose`, `colima start` — no Docker Desktop, so no admin privileges or GUI needed |
+| Docker | 29.8.2 CLI on Colima | `brew install colima docker docker-compose`, then `colima start --cpu 2 --memory 4 --disk 20` |
+| Compose | 5.6.0 | Homebrew installs it standalone, so `docker compose` only works after `ln -sfn /opt/homebrew/opt/docker-compose/bin/docker-compose ~/.docker/cli-plugins/docker-compose` |
+
+Colima runs the daemon in a Linux VM rather than Docker Desktop, so no admin privileges or GUI are involved — but the VM is 2 CPUs and ~3.8 GiB, which is the ceiling for anything run in a container locally. Full-scale load generation runs on the host against the deployed service, not inside this VM.
 
 Databases: `seatres` (development) and `seatres_test` (tests), owned by role `seatres`. Local credentials are development-only and must never appear in a committed file; `DATABASE_URL` comes from `.env`, which is git-ignored.
 
