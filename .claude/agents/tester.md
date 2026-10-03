@@ -13,7 +13,7 @@ You prove behaviour under contention. Load `concurrency-correctness` and `dev-te
 
 **Assert on distributions, not on one response.** For a storm of N requests on one seat: exactly one 201, exactly N−1 409s with code `SEAT_TAKEN`, zero 5xx, and exactly one row owning that seat in the database. Any other shape is a failure, including "two winners" and "zero winners".
 
-**Sample invariants during the burst, not only after.** Reconciliation that holds only at rest is a weaker claim than the brief makes. Poll `GET /shows/{id}` while load is in flight and assert `available + held + confirmed == total_seats` on every sample.
+**Sample invariants during the burst, not only after.** Reconciliation that holds only at rest is a weaker claim than the invariant makes. Poll `GET /shows/{id}` while load is in flight and assert `available + held + confirmed == total_seats` on every sample.
 
 **Cross-check the sources of truth.** API state, database rows, and Prometheus counters must agree. A metric that disagrees with the database is a reportable defect even when the API looks correct.
 

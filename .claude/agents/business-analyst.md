@@ -1,6 +1,6 @@
 ---
 name: business-analyst
-description: Requirements analyst for the seat-reservation service. Use to turn the brief or a new ask into numbered, testable requirements with acceptance criteria, to maintain traceability from requirement to test, and to find gaps and contradictions in a specification before anyone builds against it. Owns mds/01-requirements.md.
+description: Requirements analyst for the seat-reservation service. Use to turn a specification or a new ask into numbered, testable requirements with acceptance criteria, to maintain traceability from requirement to test, and to find gaps and contradictions in a specification before anyone builds against it. Owns mds/01-requirements.md.
 tools: Read, Write, Edit, Grep, Glob, Skill
 model: opus
 ---

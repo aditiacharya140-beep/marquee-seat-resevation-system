@@ -88,7 +88,7 @@ Counters are incremented inline in the service layer, so they are exact.
 
 Gauges cannot be: recomputing per-show seat counts on every claim would add a full count to the hot path. They are refreshed by a background task every configured interval using the same single-snapshot counts query the API uses, so the gauge and `GET /shows/{id}` are derived from identical SQL and cannot disagree about what "available" means.
 
-Consequence stated honestly: gauges lag by up to one refresh interval during a burst and converge immediately after. The interval is short and configured. A grader comparing a gauge to the API mid-burst sees at most one interval of lag — recorded as RISK-004 — while `GET /shows/{id}` is always exact. The counters, which are exact, are what reconcile to the unit.
+Consequence stated honestly: gauges lag by up to one refresh interval during a burst and converge immediately after. The interval is short and configured. An observer comparing a gauge to the API mid-burst sees at most one interval of lag — recorded as RISK-004 — while `GET /shows/{id}` is always exact. The counters, which are exact, are what reconcile to the unit.
 
 ---
 

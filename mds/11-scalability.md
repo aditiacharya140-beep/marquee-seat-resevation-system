@@ -1,6 +1,6 @@
 # Scalability
 
-Stated plainly: the design trades peak throughput for correctness, because the brief grades correctness and treats throughput as a constraint to survive rather than a number to maximize. This document says where the ceilings are, which one is hit first, and what is deliberately not solved.
+Stated plainly: the design trades peak throughput for correctness, because correctness is the requirement and throughput is a constraint to survive rather than a number to maximize. This document says where the ceilings are, which one is hit first, and what is deliberately not solved.
 
 ---
 
@@ -52,9 +52,9 @@ pool_per_instance    = usable_connections / instance_count − audit_writer_conn
 
 The pool is sized by what the **database** can serve, never by expected request concurrency. Postgres backends are processes; a pool larger than the database's ceiling converts a queue the application controls into refusals the application cannot control.
 
-Excess concurrency therefore queues **at the pool**, which is the right place for it: the wait is bounded by an acquire timeout, it is visible as `db_pool_waiting`, and a request that exceeds it returns 503 `DATABASE_UNAVAILABLE` — the single legitimate 5xx in the service. Keeping it at zero under the graded burst is a sizing exercise, and `db_pool_waiting` sustained above zero is the alert that precedes it.
+Excess concurrency therefore queues **at the pool**, which is the right place for it: the wait is bounded by an acquire timeout, it is visible as `db_pool_waiting`, and a request that exceeds it returns 503 `DATABASE_UNAVAILABLE` — the single legitimate 5xx in the service. Keeping it at zero under a full-scale burst is a sizing exercise, and `db_pool_waiting` sustained above zero is the alert that precedes it.
 
-A 20,000-request burst against a pool of, say, 20 means a queue roughly 1,000 deep. At ~5 round trips of a few milliseconds each, that drains in single-digit seconds. The acquire timeout must exceed that drain time, or correct requests are refused for a queue that was about to serve them. This is the one number most likely to produce a spurious 5xx under grading, so it is configured generously and measured by the burst script.
+A 20,000-request burst against a pool of, say, 20 means a queue roughly 1,000 deep. At ~5 round trips of a few milliseconds each, that drains in single-digit seconds. The acquire timeout must exceed that drain time, or correct requests are refused for a queue that was about to serve them. This is the one number most likely to produce a spurious 5xx under load, so it is configured generously and measured by the burst script.
 
 ---
 
@@ -124,4 +124,4 @@ The honest trade: a database outage is a full booking outage. For assigned seati
 | Multi-region | A single primary is the premise of the atomic decision; multi-region writes need a different design entirely |
 | Caching show state | Availability is the most volatile data in the system; a cache would serve wrong answers during exactly the burst it was added for |
 
-Each of these is a reasonable next step for a larger system. None of them makes the graded correctness properties hold more strongly, and several would weaken them.
+Each of these is a reasonable next step for a larger system. None of them makes the correctness properties hold more strongly, and several would weaken them.

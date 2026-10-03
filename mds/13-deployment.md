@@ -94,9 +94,9 @@ Render's free tier spins a service down after idle. The first request then pays 
 | `/readyz` as the gate | Platform routes traffic only when the database is genuinely reachable |
 | Burst script warms first | Phase 0 polls `/readyz` until ready before measuring — otherwise a cold start is recorded as load |
 | Pool pre-warm | `DB_POOL_MIN` connections opened at startup so the first request does not pay connection setup |
-| Documented in the README | A reviewer hitting a spun-down URL sees the first request take seconds; saying so prevents it being read as a fault |
+| Documented in the README | Anyone hitting a spun-down URL sees the first request take seconds; saying so prevents it being read as a fault |
 
-Recorded as RISK-001. The free tier's other constraint — a managed free database expiring after a fixed window — is tracked in the ledger with the recreation procedure, because an expired database is a live URL that returns 503 to a reviewer.
+Recorded as RISK-001. The free tier's other constraint — a managed free database expiring after a fixed window — is tracked in the ledger with the recreation procedure, because an expired database is a live URL that returns 503 to everyone.
 
 ---
 
@@ -141,14 +141,14 @@ Every row starts from a signal that exists. A runbook entry whose first step is 
 
 ## README contents
 
-The README is what a reviewer reads first, and it must make a clean checkout work without this document:
+The README is what a new engineer reads first, and it must make a clean checkout work without this document:
 
 1. What the service is, and the live URL.
 2. Run locally in one command — `docker compose up`.
 3. Run without Docker, including the Homebrew Postgres path, since neither Docker nor Postgres is assumed present.
 4. The burst script: `./burst.sh <BASE_URL>`, its flags, and an annotated sample output.
 5. Auth quickstart: get a guest token, create a show as admin, reserve, confirm — as copy-pasteable `curl`.
-6. The documented semantics a reviewer will test: all-or-nothing multi-seat, hold-then-confirm, idempotency behaviour including same-key-different-body.
+6. The documented semantics a client must code against: all-or-nothing multi-seat, hold-then-confirm, idempotency behaviour including same-key-different-body.
 7. Metrics and logs access, and what to watch during a burst.
 8. Environment variables, with the free-tier cold-start caveat stated plainly.
 9. A pointer to `mds/00-overview.md` for the design, and to `WRITEUP.md` for the decisions.

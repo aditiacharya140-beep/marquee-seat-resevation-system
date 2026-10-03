@@ -38,7 +38,7 @@ Argon2 hashing in a bounded executor. JWT encode/decode with `typ` checks. Regis
 
 **Exit:** every flow works end to end; the full authorization probe suite passes, including spoofed identity, cross-principal access, refresh-as-access, tampered tokens; guest upgrade preserves `user_id`.
 **Covers:** REQ-001 – REQ-008.
-**Why here:** every subsequent route needs a principal, and identity-is-token-derived is a graded property, not a prerequisite to rush.
+**Why here:** every subsequent route needs a principal, and identity-is-token-derived is a correctness property in its own right, not a prerequisite to rush.
 
 ## Stage 3 — Shows and seats
 
@@ -81,7 +81,7 @@ Metric catalogue from [10-observability.md](10-observability.md). Domain counter
 
 README per the contents list in [13-deployment.md](13-deployment.md). `WRITEUP.md`: the atomic mechanism and why it is race-free, multi-seat deadlock avoidance, idempotency storage and enforcement, holds and expiry, consistency versus availability under partition, what would page someone at 2am, what would come next. Final clean-clone verification on a fresh directory.
 
-**Exit:** a reviewer with only the README can clone, run, burst, and read the live metrics without asking a question.
+**Exit:** an engineer with only the README can clone, run, burst, and read the live metrics without asking a question.
 
 ## Stage 9 — Monitoring view (optional)
 

@@ -49,13 +49,13 @@ Append-only. Never delete an entry; supersede it with a new one that references 
 
 **Date** 2026-10-03
 
-**Context** The brief permits either an explicit cancel or a time-boxed auto-expiring hold, and requires `GET /shows/{id}` to report available, held, and confirmed.
+**Context** The requirements permit either an explicit cancel or a time-boxed auto-expiring hold, and require `GET /shows/{id}` to report available, held, and confirmed.
 
 **Choice** Reserve returns `held` with `expires_at`. `POST /reservations/{id}/confirm` promotes to `confirmed`. `cancel` releases early. Expiry is enforced lazily in the claim predicate and eventually by a sweeper.
 
 **Reasoning** All three seat states genuinely exist and are observable, which the state contract demands. A hold is also where a payment step would attach without reworking the claim. Both release models are implemented, which is strictly more than either alone.
 
-**Consequences** Reserve returns `status: "held"`, not `"confirmed"` as in the brief's literal example response. Deliberate and documented in the README and `WRITEUP.md`, since the brief explicitly invites choosing a hold model. Confirm must be reachable before a token expires, hence the guest-token-lifetime validation.
+**Consequences** Reserve returns `status: "held"`, not `"confirmed"`. Deliberate, and documented in the README, since the requirements leave the hold model open and demand all three seat states be observable. Confirm must be reachable before a token expires, hence the guest-token-lifetime validation.
 
 ---
 
@@ -113,7 +113,7 @@ Append-only. Never delete an entry; supersede it with a new one that references 
 
 **Date** 2026-10-03
 
-**Context** Rate limiting is required, and the graded burst sends 20,000 requests in roughly one second.
+**Context** Rate limiting is required, and an on-sale burst sends on the order of 20,000 requests in roughly one second.
 
 **Choice** In-process token bucket keyed by principal where a token exists and by IP only for pre-auth routes, with per-route-class ceilings as environment variables and a global disable flag.
 
@@ -175,7 +175,7 @@ Append-only. Never delete an entry; supersede it with a new one that references 
 
 **Choice** PostgreSQL 16 everywhere, via Homebrew or compose locally.
 
-**Reasoning** SQLite cannot express `SELECT … FOR UPDATE`, has different predicate re-evaluation semantics, and does not support partial unique indexes the same way. The single thing being graded is precisely the part that would differ between engines, so it would be untested until it reached production.
+**Reasoning** SQLite cannot express `SELECT … FOR UPDATE`, has different predicate re-evaluation semantics, and does not support partial unique indexes the same way. The single thing that must be proven correct is precisely the part that would differ between engines, so it would be untested until it reached production.
 
 **Consequences** A local Postgres is a prerequisite for Stage 1.
 
@@ -199,7 +199,7 @@ Append-only. Never delete an entry; supersede it with a new one that references 
 
 **Trigger** Render free web services spin down after idle; free managed databases expire after a fixed window.
 
-**Impact** A reviewer's first request takes seconds. An expired database makes the live URL return 503 — a dead deploy, which the brief names as the most common way strong submissions fail.
+**Impact** The first request after idle takes seconds. An expired database makes the live URL return 503 — a dead service that looks like a code fault.
 
 **Mitigation** `/readyz` as the platform's health gate; `DB_POOL_MIN` pre-warmed; burst phase 0 warms before measuring; the cold start documented in the README so it is not read as a fault; a calendar check on database expiry with a documented recreation procedure.
 

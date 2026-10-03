@@ -94,7 +94,7 @@ A hold about to lapse, with a competing claim and the sweeper running. Assertion
 
 ### Reconciliation during load — REQ-013
 
-A poller calls `GET /shows/{id}` continuously while the burst runs, asserting `available + held + confirmed == total_seats` on **every** sample. Sampling only after the burst is a materially weaker claim than the brief makes, and this test is the one that catches a drifted effective-status expression.
+A poller calls `GET /shows/{id}` continuously while the burst runs, asserting `available + held + confirmed == total_seats` on **every** sample. Sampling only after the burst is a materially weaker claim than the invariant makes, and this test is the one that catches a drifted effective-status expression.
 
 ### Cross-check
 
@@ -113,7 +113,7 @@ For each of the three mechanisms — guarded claim, quota lock, idempotency key 
 - Cold start: container from scratch reaches `/readyz` ready within the configured budget.
 - Restart mid-burst: no double-sell, no stuck idempotency key, invariant intact afterwards.
 - Graceful shutdown flushes the audit queue.
-- A clean clone builds and runs via the documented command, in CI, with no manual step — this is the check for REQ-050, and the most common way a submission fails.
+- A clean clone builds and runs via the documented command, in CI, with no manual step — this is the check for REQ-050, and the most common way an otherwise sound service fails to run elsewhere.
 
 ---
 
@@ -183,4 +183,4 @@ VERDICT: PASS
 
 ## CI
 
-On every push: lint, type check, unit, integration against a Postgres service container, concurrency suite at reduced scale, container build, and a smoke run of the built image from a clean checkout proving `/readyz` becomes ready. The full-scale burst runs against the deployed URL manually and before submission, because it is slow and needs the live target.
+On every push: lint, type check, unit, integration against a Postgres service container, concurrency suite at reduced scale, container build, and a smoke run of the built image from a clean checkout proving `/readyz` becomes ready. The full-scale burst runs against the deployed URL manually and before each release, because it is slow and needs the live target.
