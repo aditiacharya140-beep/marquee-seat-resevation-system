@@ -34,6 +34,19 @@ RETURNING id, label;
 
 Zero rows returned means the seat was taken — a clean 409. One row means this transaction owns it. Under `READ COMMITTED`, a concurrent `UPDATE` on the same row blocks, then re-evaluates the `WHERE` clause against the committed version, so a loser sees the predicate fail and affects nothing. There is no window between the check and the write because they are the same statement.
 
+**Verified, not assumed.** All four behaviours were probed directly against PostgreSQL 16.15 before any application code existed (LEARN-002 in `mds/99-ledger.md`):
+
+| Probe | Result |
+|---|---|
+| Loser blocks then re-evaluates | `UPDATE 0`, row stays with the winner |
+| 50 concurrent claimers, one seat | 1 winner, 49 losers, **0 errors** |
+| Winner rolls back instead of committing | Blocked claimer then wins — correct, a rolled-back claim never happened |
+| Lapsed hold, no sweeper running | Claimable immediately |
+
+The zero-errors result is the load-bearing one: a loser is a *decision* (zero rows affected), not an exception to catch and translate. That is what makes "no 5xx for a domain outcome" achievable rather than aspirational.
+
+These four are the minimum regression set for any change to the claim predicate. Reproduce them as automated tests rather than trusting a one-off manual result.
+
 **Multi-seat claim** — all-or-nothing, in one statement, locking in a deterministic order:
 
 ```sql
@@ -117,3 +130,5 @@ A test that would still pass against a read-then-write implementation is not tes
 ## Enhancement log
 
 - `2026-10-03` — Initial invariants: guarded conditional update, ordered multi-seat CTE, deadlock-free lock order, shared effective-status expression, quota-row serialization, idempotency key lifecycle.
+- `2026-10-03` — Claim semantics verified against PostgreSQL 16.15 (LEARN-002). Rule added: the four probes above are the minimum regression set for any change to the claim predicate.
+- `2026-10-03` — Pool sizing is a correctness concern, not tuning (LEARN-003): local `max_connections` is 100 and the test suite draws from the same pool, so an oversized dev pool surfaces as connection errors that look like application defects. Size against the server ceiling.

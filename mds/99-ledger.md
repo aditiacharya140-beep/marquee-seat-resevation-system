@@ -244,3 +244,41 @@ Append-only. Never delete an entry; supersede it with a new one that references 
 System Python is 3.9.6, too old; Homebrew Python 3.14.3 is present. Neither Docker nor PostgreSQL is installed — `docker`, `psql`, `postgres`, and `pg_ctl` are all absent. The repository had no commits at the start of work.
 
 **Implication** Stage 1 cannot close without installing Postgres (`brew install postgresql@16`) or Docker. Without Docker locally, the image is only ever exercised by CI and the platform build, which is a weaker check than the clean-checkout requirement deserves.
+
+**Resolved** 2026-10-03. PostgreSQL 16.15 and Python 3.13.16 installed via Homebrew; Colima provides a Docker daemon without Docker Desktop. See the prerequisites table in [14-stage-plan.md](14-stage-plan.md) for the resulting local setup.
+
+---
+
+## LEARN-002 — ADR-001's Postgres semantics verified empirically
+
+**Date** 2026-10-03
+
+The guarded conditional `UPDATE` was tested directly against PostgreSQL 16.15 before any application code existed, because the entire correctness argument rests on behaviour that was otherwise only asserted. Four probes against a single-row table using the exact claim predicate:
+
+| Probe | Setup | Result |
+|---|---|---|
+| Blocking re-evaluation | Txn A claims and holds the row lock 2s, then commits; txn B issues the identical guarded `UPDATE` 0.4s in | B blocked, then reported **`UPDATE 0`**. Row remained A's. |
+| 50-way contention | 50 concurrent claimers on one seat, no coordination | **1 × `UPDATE 1`, 49 × `UPDATE 0`, 0 errors.** Exactly one winner. |
+| Rollback releases | Txn A claims, holds 1.5s, then **rolls back**; B claims 0.4s in | B blocked, then reported **`UPDATE 1`** and owns the seat |
+| Lazy expiry | Row set to `held` with `hold_expires_at` in the past, no sweeper running | Claim returned **`UPDATE 1`** — a lapsed hold is claimable with no worker involved |
+| Live hold protected | Row held by another principal with a future expiry | Claim returned **`UPDATE 0`** |
+
+**Implication** ADR-001 is confirmed rather than assumed: `READ COMMITTED` re-evaluates the `WHERE` clause after a blocking row lock is released, a rolled-back claim correctly leaves the seat winnable, and the lazy-expiry arm of the predicate works independently of the sweeper. Zero errors under 50-way contention means losers are a *decision* (zero rows affected), not an exception to translate — which is what makes the "no 5xx for a domain outcome" requirement achievable rather than aspirational.
+
+These probes are the specification for the Stage 4 concurrency tests and should be reproduced as automated tests rather than left as a one-off manual result.
+
+## LEARN-003 — Local Postgres connection ceiling is 100
+
+**Date** 2026-10-03
+
+The Homebrew PostgreSQL 16 default is `max_connections = 100`. Per the pool arithmetic in [11-scalability.md](11-scalability.md), the pool must be sized against this, not against expected request concurrency — and locally the audit writer's dedicated connection plus test-suite connections come out of the same 100.
+
+**Implication** Development pool defaults must stay well under 100 or the concurrency suite will exhaust the server and produce connection errors that look like application defects. The managed production ceiling will differ and must be read from the platform rather than assumed equal.
+
+## LEARN-004 — zsh does not word-split unquoted variables
+
+**Date** 2026-10-03
+
+A shell helper holding connection flags (`DB="-h localhost -U seatres …"`) expanded as a *single* argument under zsh, so `psql $DB` passed the whole string to `-h`. zsh, unlike bash, performs no word splitting on unquoted parameter expansion.
+
+**Implication** Any shell script in this repository — `burst.sh`, the container entrypoint, CI helpers — must not rely on bash word-splitting of flag-bearing variables. Use explicit arrays, `PG*` environment variables, or a `#!/usr/bin/env bash` shebang. The burst script is the one that matters: a silently misparsed base URL would make it measure the wrong target.

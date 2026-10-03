@@ -108,11 +108,21 @@ Read-only page over `audit_log`: request rate, status distribution, declines by 
 | 8 Documentation | not started |
 | 9 Monitoring view | optional |
 
-## Environment prerequisites
+## Local environment
 
-Recorded because neither is currently installed on the development machine, and Stage 1 cannot close without one of them:
+Provisioned 2026-10-03. Versions are pinned here because the container must match them.
 
-- **Postgres 16** — `brew install postgresql@16`, or via `docker compose`.
-- **Docker** — needed to verify the image locally. Without it, the container is only ever exercised by CI and the platform build, which is a weaker check than the clean-checkout requirement deserves.
+| Component | Version | How |
+|---|---|---|
+| PostgreSQL | 16.15 | `brew install postgresql@16`, `brew services start postgresql@16` — keg-only, so `/opt/homebrew/opt/postgresql@16/bin` must be on `PATH` |
+| Python | 3.13.16 | `brew install python@3.13`; venv at `.venv` |
+| Docker | Colima + Docker CLI | `brew install colima docker docker-compose`, `colima start` — no Docker Desktop, so no admin privileges or GUI needed |
 
-Python 3.13+ is required; the system Python 3.9 is too old. Homebrew Python 3.14 is present.
+Databases: `seatres` (development) and `seatres_test` (tests), owned by role `seatres`. Local credentials are development-only and must never appear in a committed file; `DATABASE_URL` comes from `.env`, which is git-ignored.
+
+Two numbers from this setup that the design depends on:
+
+- **`max_connections` is 100** locally. The pool is sized against the server ceiling, not against request concurrency ([11-scalability.md](11-scalability.md)), and the test suite draws from the same 100. See LEARN-003.
+- **The claim mechanism is verified against this server**, not merely specified. See LEARN-002 for the four probes and their results.
+
+System Python 3.9 is too old and is not used. Homebrew Python 3.14 is present but 3.13 is the pinned version, matching the container base image.
