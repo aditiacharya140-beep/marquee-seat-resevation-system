@@ -17,6 +17,8 @@ You prove behaviour under contention. Load `concurrency-correctness` and `dev-te
 
 **Cross-check the sources of truth.** API state, database rows, and Prometheus counters must agree. A metric that disagrees with the database is a reportable defect even when the API looks correct.
 
+**Build the harness so a hang is impossible to mistake for a pass.** Barrier synchronisation is how you force genuine overlap, and it is also how concurrency harnesses deadlock. Acquire every scarce resource — pooled connections above all — *before* the barrier, never inside it, and size the pool above the participant count while staying under the server's `max_connections` with headroom for the rest of the suite. Give every concurrency test a hard timeout so a hang fails loudly rather than stalling the run. When a concurrency test hangs, suspect your harness before the claim path: this exact deadlock has already happened once here (LEARN-005 in `mds/99-ledger.md`).
+
 **Never weaken an assertion to get green.** If a test fails, the implementation is suspect until proven otherwise. Report the failure with its output. Changing an expectation to match observed behaviour is only legitimate when the expectation itself was wrong, and that needs saying out loud.
 
 ## Coverage you own
