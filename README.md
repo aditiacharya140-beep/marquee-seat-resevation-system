@@ -64,12 +64,15 @@ curl -s $BASE/metrics | grep -E 'reservations_|seats_available'
 | Method | Path | Who | |
 |---|---|---|---|
 | `POST` | `/auth/register` · `/auth/login` · `/auth/guest` | public | returns a bearer token |
+| `POST` | `/auth/refresh` | public | a refresh token in, a new access token out |
+| `POST` | `/auth/upgrade` | guest | same account gains an email and password; its bookings stay |
 | `GET` | `/auth/me` | any principal | |
-| `POST` | `/shows` | admin | show and all its seats, one transaction |
+| `POST` | `/shows` | admin | show and all its seats, one transaction; `seat_overrides` for per-seat price |
+| `GET` | `/shows` | public | paginated catalogue, newest first |
 | `GET` | `/shows/{id}` | public | seat map and counts from one snapshot |
 | `POST` | `/shows/{id}/reserve` | any principal | **the atomic claim**; `Idempotency-Key` required |
 | `POST` | `/reservations/{id}/confirm` · `/cancel` | owner | for a hold |
-| `GET` | `/reservations/{id}` | owner | |
+| `GET` | `/reservations` · `/reservations/{id}` | owner | own reservations only, paginated |
 | `GET` | `/healthz` · `/readyz` · `/metrics` | public | liveness · real DB query · Prometheus |
 
 Interactive docs at `/docs`.
@@ -89,6 +92,10 @@ Interactive docs at `/docs`.
 - **Identity is the token's subject.** No request body has an identity field; a
   `user_id` in a payload is ignored.
 - **Ownership failures are `404`**, not `403`, so reservation ids cannot be enumerated.
+- **Sessions.** An access token lasts 15 minutes; `/auth/refresh` exchanges the
+  refresh token from register or login for a new one. Guests get no refresh token.
+- **Lists** are keyset-paginated: pass the `next_cursor` from one page as `cursor` for
+  the next; `null` means there are no more.
 - **Errors** share one envelope: `{"error": {"code", "message", "details", "request_id"}}`.
   Every response carries `X-Request-ID`, and every row written is stamped with it.
 

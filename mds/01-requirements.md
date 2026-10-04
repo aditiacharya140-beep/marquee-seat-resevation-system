@@ -184,20 +184,36 @@ Every monetary value is an integer count of paise, stored as `BIGINT`, transport
 
 ## Traceability
 
-| REQ | Acceptance covered by | Test | Status |
-|---|---|---|---|
-| REQ-001 – REQ-008 | auth suite | `tests/integration/test_auth.py` | pending |
-| REQ-010 – REQ-014 | show suite | `tests/integration/test_shows.py` | pending |
-| REQ-020, 027, 028, 029 | reserve contract | `tests/integration/test_reserve.py` | pending |
-| REQ-021, 022 | hot-seat storm, multi-seat race | `tests/concurrency/test_double_sell.py` | pending |
-| REQ-023 | parallel limit breach | `tests/concurrency/test_user_limit.py` | pending |
-| REQ-024 – REQ-026 | idempotency, concurrent keys | `tests/concurrency/test_idempotency.py` | pending |
-| REQ-030 – REQ-036 | lifecycle, expiry race | `tests/concurrency/test_lifecycle.py` | pending |
-| REQ-005, 007, 032 | authorization probes | `tests/integration/test_authz.py` | pending |
-| REQ-013, 043, 048 | burst reconciliation | `burst/` + `tests/concurrency/test_reconciliation.py` | pending |
-| REQ-040 – REQ-047, 049 | operational suite | `tests/integration/test_ops.py` | pending |
-| REQ-050 | container smoke | CI job | pending |
-| REQ-060 | money invariants | `tests/unit/test_money.py` | pending |
+| REQ | Test | Status |
+|---|---|---|
+| REQ-001, 002, 003, 006 | `tests/integration/test_auth.py` | covered |
+| REQ-004 guest upgrade | `test_auth.py::test_a_guest_upgrade_keeps_the_same_user`, `::test_two_concurrent_upgrades_of_one_guest_have_one_winner` | covered; "reservations stay attached" follows from the unchanged id and is not asserted |
+| REQ-005 identity is token-derived | `test_reserve.py::test_a_reserve_confirms_outright_and_is_owned_by_the_token_subject` | covered |
+| REQ-007 admin-only | `test_shows.py::test_only_an_admin_may_create_a_show` | covered (one admin route exists) |
+| REQ-008 refresh | `test_auth.py::test_login_issues_a_refresh_token_that_only_refreshes` | covered; stateless, so "revoked or rotated" has no mechanism (open question 2) |
+| REQ-010, 011, 012 | `tests/integration/test_shows.py` | covered |
+| REQ-013 reconciliation | `tests/concurrency/test_reserve_races.py::test_reconciliation_holds_while_a_burst_is_in_flight`, `burst/` | covered |
+| REQ-014 list shows | `test_shows.py::test_the_show_list_is_keyset_paginated_newest_first` | covered |
+| REQ-020, 022, 027, 028 | `tests/integration/test_reserve.py` | covered |
+| REQ-021 no double-sell | `test_reserve_races.py::test_hot_seat_has_exactly_one_winner_and_no_5xx` | covered |
+| REQ-023 per-user limit | `test_reserve_races.py::test_one_principal_never_exceeds_the_limit` | covered |
+| REQ-024, 025 | `test_reserve.py::test_a_replay_answers_200_with_the_original_body`, `tests/unit/test_canonical_json.py` | covered |
+| REQ-026 concurrent duplicates | `test_reserve_races.py::test_one_key_fired_concurrently_reserves_once`, `tests/integration/test_reserve_edges.py` (timeout, stale takeover) | covered |
+| REQ-029 not on sale | `test_reserve_edges.py::test_a_show_that_is_not_on_sale_declines` | covered; no API takes a show off sale, so the test sets the status directly |
+| REQ-030, 031, 032, 035 | `tests/integration/test_lifecycle.py`, `test_reserve_edges.py::test_only_the_owner_may_confirm_or_read` | covered |
+| REQ-033 holds expire | `test_reserve_races.py::test_a_lapsed_hold_is_claimable_with_no_sweeper`, `test_reserve_edges.py::test_a_lapsed_hold_reads_expired_frees_the_limit_and_cannot_be_cancelled` | covered |
+| REQ-034 release never resurrects | `test_lifecycle.py` (repeat cancel after re-booking), lapsed-claim test above | **partial** — the cancel/confirm race against a competing claim across the expiry boundary is not tested |
+| REQ-036 read own reservations | `test_lifecycle.py::test_a_principal_lists_only_their_own_reservations` | covered |
+| REQ-040, 044, 045 | `tests/integration/test_ops.py`, `test_request_context.py`, `test_errors.py`, `test_reserve_edges.py` (row stamping) | covered |
+| REQ-041 readiness | `tests/integration/test_readyz.py` | covered |
+| REQ-042 metrics | `tests/integration/test_metrics.py` | **partial** — no latency histogram, `db_pool_waiting`, `seat_claim_lock_wait_seconds` or audit series |
+| REQ-043 metrics reconcile | `test_metrics.py`, `burst/` | covered |
+| REQ-046 audit | — | **not built** (ADR-032) |
+| REQ-047 rate limiting | — | **not built** (ADR-032) |
+| REQ-048 no 5xx | `test_reserve_edges.py::test_a_lock_timeout_is_a_409_never_a_500`, race tests, `burst/` | covered for lock timeout; deadlock and backstop translation are not injected by a test |
+| REQ-049 cold start | `burst/` warms `/readyz` before measuring | covered by the script; cold-start time is not measured |
+| REQ-050 clean checkout | `docker compose up --build`, run locally | **partial** — the CI container job has never run |
+| REQ-060 integer money | `test_shows.py` (float price is 422; tiered exact sum) | **partial** — no static float check |
 
 ---
 

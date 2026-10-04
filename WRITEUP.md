@@ -103,7 +103,11 @@ The key row is an ownership token; `UNIQUE (user_id, key)` decides who owns it.
 - **Only successes are stored.** A decline rolls T2 back and releases the key: a
   stored "taken" is a lie with a shelf life, and a retry should be a real attempt.
 - A key stuck `in_progress` past a staleness window (its owner died) is reclaimable by
-  one guarded `UPDATE`, so a crash cannot poison a key.
+  one guarded `UPDATE`, so a crash cannot poison a key. Taking a key over **rotates
+  its id**, and the claim's first statement locks the key row by id — so an owner that
+  was only slow, not dead, finds its id gone and stops before touching a seat. A test
+  written with the staleness window at zero found the original version let both the
+  old and the new owner proceed.
 
 ## Holds and expiry
 
@@ -185,11 +189,9 @@ fires whenever the product succeeds gets muted.
 
 The design ([mds/](mds/00-overview.md)) covers more than was built. Not built: the
 audit table and its writer (structured logs carry `request_id`, and every row is
-stamped with it), rate limiting, guest upgrade, refresh tokens (access tokens last a
-day instead), the show and reservation list endpoints, sale windows, per-seat price
-overrides, and the latency/pool/lock-wait histograms. Unmatched routes still return
-the framework's default 404 shape rather than the service's envelope. None of these
-touch the claim path.
+stamped with it), rate limiting, sale windows, and the latency/pool/lock-wait
+histograms. An unhandled exception is still logged twice, once without its request
+id. None of these touch the claim path.
 
 ## AI usage
 

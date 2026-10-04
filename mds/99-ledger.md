@@ -848,3 +848,23 @@ A replayed response is the stored `jsonb` body, so it is equal to the original a
 
 `JWT_SECRET` in `docker-compose.yml` and `.github/workflows/ci.yml` was shorter than the 32 characters `Settings` requires, so neither would have booted. Fixed. CI has still never run on a real runner; the first push is the test.
 
+## ADR-033 — Restore four cut features; make key ownership survive a wrong "presumed dead"
+
+**Date** 2026-10-04
+
+**Context** ADR-032 cut scope to reach a working claim path. With that deployed and passing a live burst, the four cuts that cannot affect booking were restored. Writing the test for stale-key recovery then exposed a defect in the recovery itself.
+
+**Choice** Built: `/auth/upgrade`, `/auth/refresh` (access TTL back to 15 minutes), `seat_overrides` on show creation, `GET /shows` and `GET /reservations` (keyset on `(created_at, id)`), and the router's 404/405 inside the envelope (SEAT-066, less its single-log-line clause). Still not built: audit, rate limiting, sale windows, the HTTP/pool/lock-wait histograms. Supersedes the corresponding lines of ADR-032.
+
+Idempotency: a reclaim now **rotates the key's id**, and T2 begins by locking the key row by id. `complete` and `release` address the id, so a reclaimed owner can neither commit nor delete the new owner's key.
+
+**Consequences** One extra row lock per reserve, on a row only that principal's duplicates touch. `mds/04` carries the argument. `mds/15-tickets.md` remains stale against ADR-017/020/021/028 in several "Done when" lines and is not the authority where they disagree.
+
+## LEARN-016 — A test at the degenerate setting found what the realistic one would not
+
+**Date** 2026-10-04
+
+Stale-key recovery was tested first with `IDEMPOTENCY_STALE_SECONDS=0` as a shortcut. Every in-progress key is then stale the instant after it is taken, so eight concurrent duplicates reclaimed from one another, and the result was two owners for one key: one reservation, several 409s, and a `release` by a loser deleting the row the winner held. At the real setting (30s against a T2 bounded to a few seconds) this needs a stalled process to reproduce, which is exactly the situation the recovery exists for.
+
+**Implication** The guard on a recovery path has to hold when the premise "the owner is dead" is false. Test recovery paths with the owner alive.
+

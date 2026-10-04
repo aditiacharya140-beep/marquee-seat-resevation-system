@@ -253,7 +253,8 @@ T1: INSERT idempotency_keys (user_id, key, scope, fingerprint, state='in_progres
                 │                         retry the insert once, then genuinely re-attempt
                 └── still in_progress  → 409 IDEMPOTENCY_IN_PROGRESS with Retry-After
 
-T2: lock quota → check limit → claim seats → close superseded claim rows
+T2: lock the key row by id (ownership check, ADR-033) → lock quota → check limit
+    → claim seats → close superseded claim rows
     → insert reservation + reservation_seats
     → UPDATE idempotency_keys SET state='completed', status_code, response_body
     → COMMIT
@@ -293,6 +294,8 @@ Every replay answers **200** with the stored body and `Idempotent-Replay: true`,
 ### Stale keys
 
 A worker that dies mid-T2, or one whose release failed, leaves an `in_progress` row with no owner. A key `in_progress` for longer than the configured staleness window is reclaimable: the reclaiming transaction takes the row `FOR UPDATE`, re-checks the age, and resets it to its own ownership. Without this, one crash poisons that key permanently.
+
+**The key's id is the ownership token, and a reclaim rotates it (ADR-033).** "Presumed dead" is a guess from a timestamp, and a merely slow owner would otherwise proceed alongside its reclaimer: two transactions each believing they own one key, two reservations, and a `release` by the loser deleting the winner's key. So `reclaim_if_stale` sets a new `id`, and T2's first statement is `SELECT ... WHERE id = $key_id AND state = 'in_progress' FOR UPDATE`. An owner whose key was taken finds no row and answers 409 `IDEMPOTENCY_IN_PROGRESS` before any seat work; an owner that got there first holds the row lock, so a reclaimer waits, re-checks against the committed row, and replays instead. The key row is locked before the quota row and nothing else locks it inside a multi-statement transaction, so it adds no edge to the deadlock argument.
 
 The reclaim is **lazy**, triggered by the arrival of a duplicate rather than by a worker — the same shape as seat expiry, and for the same reason. Nothing scans for stale keys, so `ix_idem_stale` has no reader and is dropped (ADR-017).
 

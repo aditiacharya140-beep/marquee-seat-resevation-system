@@ -94,6 +94,10 @@ The same pass found that `unhandled_exceptions_total` — the direct measurement
 | Migrations ran locally and failed in the container | `python -m alembic` puts the working directory on `sys.path`; the `alembic` console script the entrypoint uses does not. Every local run and every test passed. Found by `docker compose up`, minutes after "the migration works" (LEARN-013) |
 | Compose and CI could not boot | Their `JWT_SECRET` values were shorter than the minimum the settings validate. Found by reading them against the config, before either was run (RISK-013) |
 
+### By a test written for a path nobody expected to be wrong
+
+Stale-key takeover let both the "dead" owner and its replacement proceed if the owner was merely slow — two owners of one idempotency key, and the loser's cleanup deleting the winner's key. Found while adding the missing test for that branch, not by review. Fixed by making the key's id the ownership token: a takeover rotates it, and the claim locks the key row by id before it touches a seat (ADR-033, LEARN-016).
+
 ### In the test harness, not the service
 
 A concurrency probe hung indefinitely. The cause was entirely in the harness: fifty tasks each acquired a pooled connection *and then* waited on a fifty-wide barrier, against a pool of thirty. Thirty held connections waiting for twenty that could never obtain one.
