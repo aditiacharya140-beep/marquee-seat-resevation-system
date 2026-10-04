@@ -33,7 +33,7 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://seatres:seatres@db:5432/seatres
-      JWT_SECRET: dev-only-change-me
+      JWT_SECRET: dev-only-insecure-key-change-in-production
       ADMIN_EMAIL: admin@example.com
       ADMIN_PASSWORD: dev-only-change-me
       ALLOWED_EVENT_KINDS: cinema,concert

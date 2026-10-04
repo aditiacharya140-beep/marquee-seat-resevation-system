@@ -9,7 +9,7 @@ on:
 # them; declared once here rather than per job.
 env:
   PYTHON_VERSION: "3.13"
-  JWT_SECRET: ci-only-not-a-real-secret
+  JWT_SECRET: ci-only-not-a-real-secret-padded-to-32
   ADMIN_EMAIL: admin@example.com
   ADMIN_PASSWORD: ci-only-not-a-real-password
   ALLOWED_EVENT_KINDS: cinema,concert
@@ -64,6 +64,21 @@ jobs:
   # contract rather than only that the build exits zero.
   container-smoke:
     runs-on: ubuntu-latest
+    # The entrypoint migrates before it serves, so the container needs a real database.
+    services:
+      postgres:
+        image: postgres:16.15
+        env:
+          POSTGRES_USER: seatres
+          POSTGRES_PASSWORD: seatres
+          POSTGRES_DB: seatres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U seatres -d seatres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -95,23 +110,23 @@ jobs:
           echo "$output"
           grep -Fq 'DATABASE_URL' <<<"$output"
 
-      # DATABASE_URL points at nothing reachable from inside the container, and the
-      # service still comes up: /healthz is liveness. /readyz, which is the gate that
-      # does need a database, arrives in SEAT-009 and belongs in this job then.
+      # Host networking, so `localhost` in DATABASE_URL is the service container above.
       - name: Run the built image on a non-default PORT
         run: |
-          docker run -d --name smoke -p 9123:9123 -e PORT=9123 \
+          docker run -d --name smoke --network host -e PORT=9123 \
             -e DATABASE_URL -e JWT_SECRET -e ADMIN_EMAIL -e ADMIN_PASSWORD \
             -e ALLOWED_EVENT_KINDS -e DEFAULT_EVENT_KIND -e DEFAULT_CURRENCY \
             seat-reservation:ci
 
-      - name: Assert /healthz returns 200
+      # /readyz rather than /healthz: it is 200 only if the entrypoint's migration ran
+      # and the pool reached the database, which is the whole container contract.
+      - name: Assert /healthz and /readyz return 200
         run: |
           for _ in $(seq 30); do
-            if curl -fsS http://127.0.0.1:9123/healthz; then exit 0; fi
+            if curl -fsS http://127.0.0.1:9123/healthz && curl -fsS http://127.0.0.1:9123/readyz; then exit 0; fi
             sleep 1
           done
-          echo "::error::/healthz never returned 200"
+          echo "::error::the container never became ready"
           exit 1
 
       - name: Assert the server runs non-root as uvicorn PID 1

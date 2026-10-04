@@ -9,16 +9,11 @@ if (($# > 0)); then
     exec "$@"
 fi
 
-# mds/13-deployment.md has the entrypoint run `alembic upgrade head` before the server,
-# so a deploy cannot forget it (RISK-005). Alembic arrives in SEAT-008; until its config
-# exists there is nothing to apply, and failing the boot over a migration path that has
-# not been written yet would make a correct container look broken.
-if [[ -f "${ALEMBIC_CONFIG:-alembic.ini}" ]]; then
-    alembic upgrade head
-else
-    printf '{"ts":"%s","level":"warning","event":"migrations_skipped","request_id":null}\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2
-fi
+# Migrations run before the server, so a deploy cannot forget them (RISK-005), and a
+# failure here fails the boot: a server up against a schema it does not match is worse
+# than no server. The config lives inside app/ because that is all the image carries
+# (RISK-011).
+alembic -c "${ALEMBIC_CONFIG:-app/alembic.ini}" upgrade head
 
 # exec, so uvicorn is PID 1 and receives SIGTERM directly rather than through a shell
 # that would not forward it. --no-access-log: AccessLogMiddleware owns that line.

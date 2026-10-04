@@ -4,7 +4,7 @@ RUFF    := .venv/bin/ruff
 MYPY    := .venv/bin/mypy
 PORT    ?= 8000
 
-.PHONY: help lint format types test unit integration concurrency run verify
+.PHONY: help lint format types test unit integration concurrency run verify migrate
 
 help:
 	@printf '%-14s %s\n' \
@@ -42,6 +42,9 @@ concurrency:
 
 run:
 	$(PY) -m uvicorn app.main:app --reload --port $(PORT) --no-access-log
+
+migrate:
+	$(PY) -m alembic -c app/alembic.ini upgrade head
 
 verify:
 	./scripts/verify-env.sh

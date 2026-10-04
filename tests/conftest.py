@@ -2,9 +2,9 @@
 
 Two constraints shape this file.
 
-**No database.** Stage 0 has no database code at all, and these tests must run before
-Stage 1 lands. The client therefore drives the real ASGI application in-process through
-`httpx.ASGITransport` — no server, no socket, no pool.
+**A real database, never the development one.** The client drives the real ASGI
+application in-process through `httpx.ASGITransport`, against `TEST_DATABASE_URL`,
+migrated by the same Alembic command the container entrypoint runs.
 
 **Probe routes live here, not in `app/`.** Asserting the 422 and 500 correlation paths
 needs a route that fails on purpose. Those routes are attached to a test-local
@@ -24,6 +24,8 @@ import json
 import logging
 import os
 import re
+import subprocess
+import sys
 from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import Any, Final
@@ -47,23 +49,31 @@ _FALLBACK_ENV: Final[dict[str, str]] = {
 }
 
 
-def _names_declared_in_env_file() -> set[str]:
+def _env_file_values() -> dict[str, str]:
     """`Settings` resolves `env_file=".env"` against the working directory, so this
     reads the same file it will, rather than one next to this module."""
     env_file = Path(".env")
     if not env_file.exists():
-        return set()
+        return {}
     return {
-        line.split("=", 1)[0].strip().upper()
+        line.split("=", 1)[0].strip().upper(): line.split("=", 1)[1].strip()
         for line in env_file.read_text().splitlines()
         if "=" in line and not line.lstrip().startswith("#")
     }
 
 
-_DECLARED = _names_declared_in_env_file()
+_DECLARED = _env_file_values()
 for _name, _value in _FALLBACK_ENV.items():
     if _name not in os.environ and _name not in _DECLARED:
         os.environ[_name] = _value
+
+# The suite owns its own database: the application under test must never write to the
+# development one. The process environment outranks `.env`, so this redirects the pool
+# and the migration subprocess alike.
+os.environ["DATABASE_URL"] = os.environ.get("TEST_DATABASE_URL") or _DECLARED["TEST_DATABASE_URL"]
+# A pool is opened per test (each test has its own event loop); one warm connection
+# keeps that cheap, and the pool still grows to DB_POOL_MAX under a concurrency test.
+os.environ["DB_POOL_MIN"] = "1"
 
 import httpx  # noqa: E402  - must follow the environment bootstrap above
 import pytest  # noqa: E402
@@ -75,6 +85,7 @@ from app.core.context import get_request_id  # noqa: E402
 from app.core.error_codes import ErrorCode  # noqa: E402
 from app.core.errors import ConflictError  # noqa: E402
 from app.core.logging import JsonFormatter, configure_logging  # noqa: E402
+from app.db.engine import database  # noqa: E402
 from app.main import create_app, lifespan  # noqa: E402
 
 TEST_TIMEOUT_SECONDS: Final = float(os.environ.get("TEST_TIMEOUT_SECONDS", "15"))
@@ -271,8 +282,29 @@ def _client(application: FastAPI, *, raise_app_exceptions: bool) -> httpx.AsyncC
     )
 
 
+@pytest.fixture(scope="session")
+def migrated() -> None:
+    """The real migration, through the real entrypoint command, against the test database."""
+    subprocess.run(
+        [sys.executable, "-m", "alembic", "-c", "app/alembic.ini", "upgrade", "head"],
+        cwd=PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+    )
+
+
 @pytest.fixture
-async def client(probe_app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
+async def db(migrated: None) -> AsyncIterator[None]:
+    """`ASGITransport` does not run the lifespan, so the pool is opened here instead."""
+    await database.connect()
+    try:
+        yield
+    finally:
+        await database.close()
+
+
+@pytest.fixture
+async def client(probe_app: FastAPI, db: None) -> AsyncIterator[httpx.AsyncClient]:
     async with _client(probe_app, raise_app_exceptions=False) as http_client:
         yield http_client
 
@@ -292,3 +324,4 @@ def app_lifespan() -> Callable[[FastAPI], Any]:
 @pytest.fixture
 def resolved_settings() -> Any:
     return settings
+

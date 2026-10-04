@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     db_lock_timeout_ms: int = 2000
     db_timeout_margin_ms: int = 1000
     db_idle_txn_timeout_ms: int = 10000
+    readyz_timeout_seconds: float = 2.0
     #: Read from the server, not guessed: Homebrew Postgres 16 defaults to 100 and the
     #: test suite draws from the same ceiling (LEARN-003). Managed instances differ.
     db_server_max_connections: int = 100
@@ -69,11 +70,14 @@ class Settings(BaseSettings):
     default_currency: str
 
     jwt_secret: SecretStr = Field(validation_alias="JWT_SECRET", min_length=32)
-    access_token_ttl_seconds: int = 900
+    #: A day, because there is no refresh flow: the token is the whole session.
+    access_token_ttl_seconds: int = 86400
     refresh_token_ttl_seconds: int = 604800
     guest_token_ttl_seconds: int = 3600
     admin_email: str = Field(validation_alias="ADMIN_EMAIL", min_length=1)
     admin_password: SecretStr = Field(validation_alias="ADMIN_PASSWORD", min_length=12)
+    password_min_length: int = 12
+    password_hash_workers: int = 4
 
     default_per_user_limit: int = 4
     default_hold_ttl_seconds: int = 120
@@ -100,9 +104,12 @@ class Settings(BaseSettings):
     idempotency_poll_interval_ms: int = 50
     idempotency_stale_seconds: int = 30
     idempotency_retention_hours: int = 48
+    idempotency_key_max_length: int = 255
+    idempotency_retry_after_seconds: int = 1
 
     log_level: LogLevel = LogLevel.INFO
     log_sample_debug: bool = False
+    log_queue_max: int = 10000
     service_version: str = "0.1.0"
 
     @field_validator("allowed_event_kinds", mode="before")

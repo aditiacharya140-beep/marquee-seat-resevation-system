@@ -22,6 +22,7 @@ from app.core.error_codes import ErrorCode
 from app.core.errors import AppError, InternalError, ValidationError
 from app.core.logging import configure_logging, get_logger, level_number
 from app.core.metrics import unhandled_exceptions_total
+from app.db.engine import database
 from app.middleware.access_log import AccessLogMiddleware
 from app.middleware.request_context import RequestContextMiddleware
 
@@ -43,7 +44,7 @@ def _error_response(error: AppError, request_id: str | None) -> JSONResponse:
     return JSONResponse(
         error.envelope(request_id),
         status_code=error.http_status,
-        headers={Header.REQUEST_ID: request_id} if request_id else None,
+        headers=error.headers | ({Header.REQUEST_ID: request_id} if request_id else {}),
     )
 
 
@@ -105,8 +106,12 @@ async def handle_unexpected_error(request: Request, exc: Exception) -> Response:
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     logger.info(LogEvent.STARTUP, extra={"config": settings.redacted_summary()})
-    yield
-    logger.info(LogEvent.SHUTDOWN)
+    await database.connect()
+    try:
+        yield
+    finally:
+        await database.close()
+        logger.info(LogEvent.SHUTDOWN)
 
 
 def create_app() -> FastAPI:

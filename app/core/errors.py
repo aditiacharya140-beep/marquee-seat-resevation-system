@@ -21,12 +21,14 @@ class AppError(Exception):
         message: str | None = None,
         details: dict[str, Any] | None = None,
         log_level: LogLevel | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         spec = REGISTRY[code]
         self.code = code
         self.http_status = spec.http_status
         self.message = message if message is not None else spec.message
         self.details = details
+        self.headers = headers or {}
         self.log_level = log_level if log_level is not None else spec.log_level
         super().__init__(self.message)
 

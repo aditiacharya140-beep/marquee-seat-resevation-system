@@ -66,9 +66,41 @@ class LogEvent(StrEnum):
     APP_ERROR = "app_error"
     VALIDATION_FAILED = "validation_failed"
     UNHANDLED_EXCEPTION = "unhandled_exception"
+    RESERVATION_CREATED = "reservation_created"
+    RESERVATION_CANCELLED = "reservation_cancelled"
+    RESERVATION_CONFIRMED = "reservation_confirmed"
+    CLAIM_BACKSTOP_VIOLATED = "claim_backstop_violated"
+    CLAIM_DEADLOCK = "claim_deadlock"
+    IDEMPOTENCY_RELEASE_FAILED = "idempotency_release_failed"
+    METRICS_GAUGE_UNAVAILABLE = "metrics_gauge_unavailable"
+    ADMIN_BOOTSTRAPPED = "admin_bootstrapped"
+    ADMIN_BOOTSTRAP_SKIPPED = "admin_bootstrap_skipped"
 
+
+JWT_ALGORITHM: Final = "HS256"
+TOKEN_TYPE_ACCESS: Final = "access"  # noqa: S105 - a claim value, not a credential
+TOKEN_TYPE_BEARER: Final = "bearer"  # noqa: S105
+#: Shape only. Deliverability is not something a pattern can establish.
+EMAIL_PATTERN: Final = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+PASSWORD_MAX_LENGTH: Final = 128
+CURRENCY_PATTERN: Final = r"^[A-Z]{3}$"
 
 HEALTH_STATUS_OK: Final = "ok"
+
+IDEMPOTENCY_OPERATION_RESERVE: Final = "reserve"
+
+
+class DeclineReason(StrEnum):
+    """`reservations_declined_total{reason}` values that are not simply an error code."""
+
+    LOCK_TIMEOUT = "lock_timeout"
+    DEADLOCK = "deadlock"
+    ACTIVE_CLAIM_BACKSTOP = "active_claim_backstop"
+    IDEMPOTENT_REPLAY = "idempotent_replay"
+
+
+READY_STATUS: Final = "ready"
+NOT_READY_STATUS: Final = "not_ready"
 
 #: Correlation id is carried on the ASGI scope as well as in the ContextVar,
 #: because Starlette's ServerErrorMiddleware runs outside RequestContextMiddleware

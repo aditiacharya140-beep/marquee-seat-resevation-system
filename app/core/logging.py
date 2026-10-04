@@ -4,14 +4,20 @@
 are queried, not read (mds/08-error-logging.md).
 """
 
+import atexit
+import contextlib
+import dataclasses
 import logging
+import queue
 import re
 import sys
 import traceback
 from datetime import UTC, datetime
+from logging.handlers import QueueHandler, QueueListener
 from typing import Any, Final
 
 import orjson
+from pydantic import BaseModel
 
 from app.core.config import settings
 from app.core.constants import REDACTED, REDACTED_LOG_KEY_ATOMS, SERVICE_NAME, LogLevel
@@ -61,6 +67,12 @@ def _scrub_text(text: str) -> str:
 
 
 def _redact(value: Any) -> Any:
+    # A model or dataclass passed as `extra=` would otherwise be rendered whole by the
+    # serializer, password field and all, without its keys ever being inspected.
+    if isinstance(value, BaseModel):
+        value = value.model_dump()
+    elif dataclasses.is_dataclass(value) and not isinstance(value, type):
+        value = dataclasses.asdict(value)
     if isinstance(value, dict):
         return {
             key: REDACTED
@@ -75,9 +87,7 @@ def _redact(value: Any) -> Any:
 
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        extra = {
-            key: value for key, value in record.__dict__.items() if key not in _RECORD_ATTRS
-        }
+        extra = {key: value for key, value in record.__dict__.items() if key not in _RECORD_ATTRS}
         request_id = extra.pop("request_id", None) or get_request_id()
         text = record.getMessage()
 
@@ -106,8 +116,33 @@ class JsonFormatter(logging.Formatter):
         return orjson.dumps(payload, default=str).decode()
 
 
+class _DroppingQueueHandler(QueueHandler):
+    """Formats on the calling thread, where the request context is, and hands the
+    finished line to the listener. A full queue drops the line: losing a log record is
+    an inconvenience, stalling a booking behind one is a defect."""
+
+    def enqueue(self, record: logging.LogRecord) -> None:
+        with contextlib.suppress(queue.Full):
+            self.queue.put_nowait(record)
+
+
+_listener: QueueListener | None = None
+
+
 def configure_logging() -> None:
-    handler = logging.StreamHandler(sys.stdout)
+    """stdout is written from a worker thread, never the event loop: a consumer that
+    stops draining would otherwise block the loop on write(2) and wedge every
+    in-flight request (RISK-010)."""
+    global _listener  # noqa: PLW0603 - one listener per process, replaced on reconfigure
+    if _listener is not None:
+        _listener.stop()
+    records: queue.Queue[logging.LogRecord] = queue.Queue(maxsize=settings.log_queue_max)
+    # The queue carries already-rendered lines, so the stream handler adds no format.
+    _listener = QueueListener(records, logging.StreamHandler(sys.stdout))
+    _listener.start()
+    atexit.register(_listener.stop)
+
+    handler = _DroppingQueueHandler(records)
     handler.setFormatter(JsonFormatter())
 
     root = logging.getLogger()

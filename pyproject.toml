@@ -16,6 +16,8 @@ dependencies = [
     "pydantic-settings==2.7.1",
     "alembic==1.14.1",
     "sqlalchemy==2.0.37",
+    # SQLAlchemy's asyncio layer, which Alembic runs over asyncpg, imports it lazily.
+    "greenlet==3.5.6",
     "pyjwt==2.10.1",
     "argon2-cffi==23.1.0",
     "prometheus-client==0.21.1",
@@ -47,6 +49,9 @@ ignore = ["S101"]
 # it is absolute (`app.core.logging`), so the stdlib module is never shadowed.
 "app/core/logging.py" = ["A005"]
 "tests/*" = ["S", "ARG"]
+# Statements are composed from the module constants in app/db/sql.py at import, which
+# is the one-definition rule of ADR-012. Values are bound parameters, never interpolated.
+"app/repositories/*" = ["S608"]
 "burst/*" = ["S"]
 
 [tool.mypy]
@@ -54,7 +59,12 @@ python_version = "3.13"
 strict = true
 warn_unreachable = true
 
+[[tool.mypy.overrides]]
+module = ["asyncpg.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 markers = ["concurrency: tests requiring real parallelism against Postgres"]
