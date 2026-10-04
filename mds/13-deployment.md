@@ -108,7 +108,7 @@ Every check is labelled **necessary** or **sufficient**, so the first kind is ne
 
 `https://seat-reservation-vw5k.onrender.com`, one free instance and a free managed PostgreSQL 16, both in Singapore, deploying from `main`. `render.yaml` declares them. Two values were set in the dashboard rather than by the blueprint: `ADMIN_EMAIL` and `ADMIN_PASSWORD`, which are secrets, and — because the blueprint was created from an earlier branch — `RATE_LIMIT_GUEST` and `RATE_LIMIT_TRUSTED_PROXY_HOPS`.
 
-**The proxy-hop count on Render is not 1.** With it at 1 the limiter resolved every client to one of the platform's internal `10.x` addresses, so all clients shared a bucket (LEARN-018). The correct value has to be found by raising it until a 429's `details.limited_by` shows the caller's own public address.
+**The proxy-hop count on Render is 3**, found by test rather than from documentation (LEARN-018). At 1 the limiter resolved every client to one of the platform's internal `10.x` addresses, so all clients shared a bucket. At 2 it resolved to an address that changed with every request, so nothing was ever limited. At 3 a 429's `details.limited_by` names the caller's own public address, and a forged `X-Forwarded-For` does not change it.
 
 ## Cold start
 

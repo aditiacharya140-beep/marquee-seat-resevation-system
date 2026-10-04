@@ -50,7 +50,9 @@ services:
       - key: RATE_LIMIT_GUEST
         value: 600/600s
       # Proxies in front of the service: the client address is read this many entries
-      # from the right of X-Forwarded-For. Verify after a deploy with a 429, whose
-      # details name the address the limit was applied to.
+      # from the right of X-Forwarded-For. On Render it is 3, established by test
+      # (LEARN-018): 1 resolves to the platform's internal address, 2 to an address
+      # that changes per request. Re-verify with a 429, whose details name the
+      # address the limit was applied to, if the platform's edge ever changes.
       - key: RATE_LIMIT_TRUSTED_PROXY_HOPS
-        value: "1"
+        value: "3"
