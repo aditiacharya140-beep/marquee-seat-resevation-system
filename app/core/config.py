@@ -14,8 +14,8 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from app.core.constants import DSN_REDACTED, REDACTED, LogLevel
 
-#: The audit writer holds one connection outside the request pool
-#: (mds/10-observability.md), so the pool cannot have the whole server ceiling.
+#: Kept back from the pool for the migration that runs at boot and an operator's own
+#: session: a pool that could take every connection would lock both out.
 RESERVED_NON_POOL_CONNECTIONS: Final = 1
 
 
@@ -98,12 +98,6 @@ class Settings(BaseSettings):
     #: X-Forwarded-For entirely and uses the socket peer.
     rate_limit_trusted_proxy_hops: int = 1
 
-    audit_enabled: bool = True
-    audit_queue_max: int = 50000
-    audit_batch_size: int = 500
-    audit_flush_interval_ms: int = 200
-
-    gauge_refresh_seconds: int = 2
     gauge_max_shows: int = 50
 
     idempotency_wait_ms: int = 2000
@@ -114,7 +108,6 @@ class Settings(BaseSettings):
     idempotency_retry_after_seconds: int = 1
 
     log_level: LogLevel = LogLevel.INFO
-    log_sample_debug: bool = False
     log_queue_max: int = 10000
     service_version: str = "0.1.0"
 
@@ -145,7 +138,7 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"DB_POOL_MAX ({self.db_pool_max}) exceeds the usable server ceiling "
                 f"({pool_ceiling} = DB_SERVER_MAX_CONNECTIONS "
-                f"{self.db_server_max_connections} less the audit writer's connection): "
+                f"{self.db_server_max_connections} less one kept back for migrations): "
                 "a pool larger than the server can serve converts queueing into refusals"
             )
 

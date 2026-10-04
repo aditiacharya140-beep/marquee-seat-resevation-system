@@ -923,3 +923,23 @@ Three departures from the document, each stated:
 
 **Consequences** RISK-014 is bounded at one new guest per second per address, so `per_user_limit` seats per second per address — not closed. A payment step or a verified identity is what closes it. RISK-003 (per-instance buckets) now applies for real.
 
+## LEARN-018 — The right-most `X-Forwarded-For` entry on Render is the platform's, not the client's
+
+**Date** 2026-10-04
+
+With `RATE_LIMIT_TRUSTED_PROXY_HOPS=1`, thirty concurrent bad logins against the live service produced 429s whose `details.limited_by` read `address 10.25.16.5` and `address 10.26.34.133` — internal addresses of the platform's own proxies. Every client was being resolved to one of a handful of shared buckets: the `auth` ceiling of ten a minute was, in effect, global.
+
+Locally there is no proxy and the socket peer is the client, so no test could have shown this.
+
+**Implication** The hop count is a property of the deployment and can only be verified against it. That the limiter names the address it applied a limit to is what made a wrong value visible from outside in one request; without it the symptom would have been "users report being throttled". The correct value is found by raising the setting until `limited_by` shows the caller's own public address, and it must be re-checked if the platform's edge changes.
+
+## ADR-035 — The documents describe the code; one document describes what is not built
+
+**Date** 2026-10-04
+
+**Context** The design set was written before the build, then the build cut scope (ADR-032), restored some (ADR-033, ADR-034) and departed from the documents in small ways. The documents described a service with an audit trail, a metrics middleware, a gauge refresher and background workers, none of which exist.
+
+**Choice** Documents 02–13 are rewritten or edited to describe the service as built. Everything designed and unbuilt, and everything found to be needed, is in `17-future-scope.md` and nowhere else. `14-stage-plan.md` states per stage what is built, tested and reviewed. `15-tickets.md` keeps the original board with a status table and a note that its `Done when` lines predate several ADRs. Settings with no reader (`AUDIT_*`, `GAUGE_REFRESH_SECONDS`, `LOG_SAMPLE_DEBUG`) are removed from the code and `.env.example`.
+
+**Consequences** A statement in 02–13 is a claim about the code and can be checked against it. This ledger is not rewritten: earlier entries describe what was decided at the time, and are superseded by later ones rather than edited.
+

@@ -117,7 +117,8 @@ app/db              pool, session guards, migrations, the effective-status expre
 app/core            config, errors, logging, security, metrics
 tests/concurrency   one race test per invariant, against real Postgres
 burst/              the load script
-mds/                the design: 16 documents, 31 ADRs — start at mds/00-overview.md
+mds/                the design, kept in step with the code — start at mds/00-overview.md;
+                    mds/17-future-scope.md is everything not built
 ```
 
 ## Deploy

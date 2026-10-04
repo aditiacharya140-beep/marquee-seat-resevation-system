@@ -1,51 +1,46 @@
 # Middleware
 
-## Chain order
+Three ASGI middlewares, all pure ASGI rather than `BaseHTTPMiddleware`: the latter runs the application in a separate task, so a `ContextVar` set inside the application — the outcome code the access log reports — would be invisible to the layers wrapping it.
 
-ASGI middleware wraps outward, so registration order in `main.py` is the reverse of execution order. The effective inbound order is:
+## Order
 
 ```
-1. RequestContextMiddleware      mint/accept request id, bind context
-2. ExceptionBoundaryMiddleware   catch, log once with the id and a stack, render the envelope
-3. AccessLogMiddleware           time the request, log the outcome
-4. MetricsMiddleware             latency histogram, in-flight gauge
-5. RateLimitMiddleware           per-principal ceilings, 429 + Retry-After
-6. AuditMiddleware               non-blocking enqueue of an audit record
-7. application                   routes, Depends, services
+request
+  → RequestContextMiddleware     request id: adopt or mint, bind, echo
+  → AccessLogMiddleware          one line per request, on the way out
+  → RateLimitMiddleware          per-identity bucket by route class
+  → router → Depends → handler
 ```
 
-The rationale for each position:
+Registration in `main.py` is the reverse of this, because the last middleware added is the outermost.
 
-- **Request context is first** so every later layer — including a rate-limit rejection and an unhandled exception — has a request id to log and return. A 429 with no correlation id is an untraceable event, which is the opposite of the point.
-- **The exception boundary is second**, immediately inside the context. It catches anything escaping from there inward, logs it once at `error` with the id and a stack, and **returns** the envelope. Returning rather than re-raising is the whole point: Starlette's `ServerErrorMiddleware` sits outside every user middleware and re-raises unconditionally, and its duplicate log line is emitted after the ContextVar has been reset, so it cannot carry a request id (ADR-024, LEARN-010). The access log sits outside the boundary, so a 500 produces an `unhandled_exception` line and an `http_request` line — two different events, both correlated, which is not duplication.
-- **Access log and metrics wrap the rate limiter**, so throttled requests appear in latency and status metrics. A limiter that hides its own rejections from the metrics makes a throttling incident invisible.
-- **Rate limiting precedes audit and the application** so a rejected request costs nothing beyond the bucket check — no audit row, no database connection, no route resolution.
-- **Audit is innermost** so it records the final status code, which it can only know on the way out.
+Why this order:
 
-Domain error handling is **not** middleware. FastAPI exception handlers render the envelope for `AppError`, `RequestValidationError` and `StarletteHTTPException`, because they have access to the resolved route and the raised exception. The middleware boundary at position 2 exists only for what those handlers cannot catch cleanly — an unhandled exception, which must not be allowed to reach `ServerErrorMiddleware` and be re-raised there.
+- **Request context is first**, so every later layer — including a 429 — has a request id.
+- **The access log wraps the rate limiter**, so a throttled request still produces its line and its status. A limiter that hides its own rejections makes a throttling incident invisible.
+- **The rate limiter is innermost**, so a rejected request costs a bucket check and nothing else: no routing, no dependency resolution, no database connection.
+
+Domain error handling is **not** middleware. FastAPI exception handlers render the envelope for `AppError`, `RequestValidationError`, `StarletteHTTPException` and bare `Exception` ([08-error-logging.md](08-error-logging.md)), because they have the resolved route and the raised exception.
+
+Not built, and described in [17-future-scope.md](17-future-scope.md): a metrics middleware, an audit middleware, and an exception-boundary middleware.
 
 ---
 
 ## RequestContextMiddleware
 
-Establishes correlation for everything downstream.
-
 ```
 inbound X-Request-ID present and parses as UUID  →  adopt it
 otherwise                                        →  mint uuid4
-set ContextVar request_id
+bind to the ContextVar and to the ASGI scope
 → call downstream
 set response header X-Request-ID
-reset ContextVar
+reset the ContextVar
 ```
 
-- An inbound id is validated as a UUID before adoption. An arbitrary client string would end up in a `UUID` database column and in log fields, so a malformed value is replaced with a minted one rather than rejected — the client's malformed header is not worth failing a booking over.
-- Adopting a client-supplied id lets a caller correlate across its own retries, which is exactly what a burst script needs.
-- The `ContextVar` is read by the logger, the repository layer (to stamp `request_id` on every row), and the audit middleware. Nothing passes the id through a function signature.
-- The token is reset in a `finally`, so a leaked `ContextVar` cannot bleed into the next request on the same task.
-- Background workers set their own id per batch, so audit-writer and gauge-refresher activity is traceable too. There is no expiry worker to correlate (ADR-017).
-
----
+- An inbound id is adopted only if it is a UUID. A malformed value is replaced rather than rejected: it would end up in a `uuid` column and in log fields, and a client's bad header is not worth failing a booking over.
+- Adopting a client's id lets a caller correlate across its own retries.
+- The id is read from the `ContextVar` by the logger and by the repository layer, which stamps it on every row it writes. Nothing passes it through a function signature.
+- It is **also** carried on the ASGI scope, because Starlette's `ServerErrorMiddleware` runs outside this middleware, after the `ContextVar` has been reset; the catch-all handler reads it from there.
 
 ## AccessLogMiddleware
 
@@ -54,51 +49,41 @@ One structured line per request, emitted on the way out:
 ```json
 {"ts":"…","level":"info","event":"http_request","request_id":"…",
  "method":"POST","path":"/shows/…/reserve","route":"/shows/{show_id}/reserve",
- "status":409,"duration_ms":7,"user_id":"…","outcome_code":"SEAT_TAKEN"}
+ "status":409,"duration_ms":7.1,"outcome_code":"SEAT_TAKEN"}
 ```
 
-`route` is the path template, not the concrete path, so a burst against 20,000 distinct show ids groups into one series instead of exploding cardinality. The concrete `path` is kept for forensic lookup.
-
-Health and metrics endpoints are excluded by default — a platform health check every few seconds otherwise dominates the log volume and buries the signal.
-
----
-
-## MetricsMiddleware
-
-Records, labelled by `route`, `method`, and `status`:
-
-- `http_request_duration_seconds` — histogram, buckets configured for a sub-50ms service
-- `http_requests_total` — counter
-- `http_requests_in_flight` — gauge, incremented on entry and decremented in a `finally`
-
-Label values come only from the route template and a bounded status set. No label ever carries a user id, a seat label, a show id, or an idempotency key — unbounded label cardinality is how a metrics endpoint becomes a memory leak under a 20k burst.
-
-Domain outcome counters are incremented in the **service** layer, not here, because middleware cannot distinguish `SEAT_TAKEN` from `PER_USER_LIMIT` without parsing a body.
-
----
+`route` is the path template, not the concrete path, so a burst against thousands of show ids groups into one series; an unmatched path is logged under the single label `unmatched`. The concrete `path` is kept for lookup. `/healthz`, `/readyz` and `/metrics` are excluded — a platform probe every few seconds would otherwise dominate the volume.
 
 ## RateLimitMiddleware
 
 ### Design
 
-In-process token bucket, one bucket per `(principal_or_ip, route_class)`, monotonic-clock based, with a bounded LRU of buckets so a flood of distinct principals cannot grow memory without limit.
+An in-process token bucket per `(identity, route class)` on a monotonic clock, held in a bounded least-recently-used map so a flood of distinct identities evicts idle buckets instead of growing memory.
 
-Keyed by **principal** wherever a token is present, falling back to client IP only for pre-authentication routes. This is the decision that keeps a legitimate stampede from being throttled: 20,000 distinct buyers behind one load generator share an IP but are distinct principals. An IP-keyed limiter on the reserve path would throttle the very burst the service exists to handle.
+**Keyed by principal wherever a valid token is present, and by client address only before authentication.** This is the decision that keeps an on-sale rush from being throttled: twenty thousand buyers behind one address are twenty thousand principals. The token is *verified*, not merely decoded — an unverified subject would let a client name a fresh bucket on every request.
 
-### Route classes
+The route class is decided from the method and path alone, before routing:
 
-Every ceiling is a config value, changeable by environment variable with no code change and no redeploy.
-
-| Class | Keyed by | Intent | Default |
+| Class | Applies to | Keyed by | Default |
 |---|---|---|---|
-| `reserve` | principal | Generous — must never throttle a legitimate on-sale rush | 120 / 10s |
-| `read` | principal | Generous | 300 / 10s |
-| `auth` | IP + email | Tight — this is the brute-force surface | 10 / 60s |
-| `guest` | IP | Moderate — guest-row flooding | 60 / 60s |
-| `admin` | principal | Tight — show creation is expensive | 30 / 60s |
-| exempt | — | `/healthz`, `/readyz`, `/metrics` | no limit |
+| `guest` | `POST /auth/guest` | client address | 60 / 60s |
+| `auth` | other `POST /auth/*` | client address | 10 / 60s |
+| `admin` | `POST /shows` | principal | 30 / 60s |
+| `reserve` | every other `POST` — reserve, confirm, cancel | principal | 120 / 10s |
+| `read` | everything else | principal, or address if anonymous | 300 / 10s |
+| exempt | `/healthz`, `/readyz`, `/metrics` | — | no limit |
 
-The reserve ceiling is set well above any legitimate single-principal burst. A principal who exceeds it is either misbehaving or retrying pathologically, and the per-user seat limit — a domain rule, not a transport rule — is what actually bounds how many seats one principal can take. The limiter protects the service; the domain rule protects fairness. Conflating the two is how a correctness grade turns into a wall of 429s.
+`"120/10s"` is a bucket of 120 that refills over 10 seconds. Every ceiling is a `RATE_LIMIT_<CLASS>` environment variable, validated at startup.
+
+**The `guest` ceiling is the one with a correctness consequence.** A guest principal costs nothing to create and each carries its own per-user seat limit, so the number of guests one client can mint is what bounds how many seats one client can take. The limiter narrows that; it does not close it (RISK-014, and item 1 of [17-future-scope.md](17-future-scope.md)).
+
+The reserve ceiling is set well above any legitimate single-principal burst. The limiter protects the service; the per-user limit — a domain rule — protects fairness. Conflating the two is how a correctness grade turns into a wall of 429s.
+
+### The client address
+
+Taken from `X-Forwarded-For`, counting `RATE_LIMIT_TRUSTED_PROXY_HOPS` entries **from the right**. A client's own entries arrive on the left and each proxy appends on the right, so the leftmost entry is whatever the client chose to send; reading it would let any client pick its own bucket. `0` ignores the header and uses the socket peer.
+
+The hop count is a property of the deployment and it must be right: too low and the limiter sees the platform's own internal address, shared by every client. A 429's `details.limited_by` names the address the limit was applied to, so a wrong value is visible from outside (LEARN-018).
 
 ### Response
 
@@ -109,44 +94,13 @@ X-RateLimit-Limit: 120
 X-RateLimit-Remaining: 0
 X-RateLimit-Reset: 1730000003
 ```
-with the standard error envelope and code `RATE_LIMITED`. Counted as `rate_limited_total{route_class}` so a throttling incident is visible rather than inferred from client complaints.
+
+with the standard envelope, code `RATE_LIMITED`, `details.route_class` and `details.limited_by`. Counted as `rate_limited_total{route_class}`.
 
 ### Known limitation
 
-Buckets are **per instance**. With N instances behind a load balancer the effective ceiling is N × the configured value. Accepted deliberately: the limiter is abuse protection, not a quota system, and correctness never depends on it. Making it exact would require Redis — a new dependency, a new failure mode, and a network round trip on the hot path, in exchange for precision nothing needs. Recorded as ADR-007 and RISK-003. If an exact global quota is ever required, the token bucket interface is the seam to swap.
+Buckets are **per process**. With N instances the effective ceiling is N times the configured value. Accepted: the limiter is abuse protection, not a quota, and no correctness property depends on it. An exact global limiter needs a shared store — a new dependency and a network round trip on the hot path (ADR-007, RISK-003).
 
-### Burst escape hatch
+### Switching it off
 
-A configured flag disables rate limiting entirely, and individual ceilings are env-tunable. This exists so a load test can isolate the claim path from transport policy without a redeploy. It is off by default and its state is logged at startup and exposed on `/readyz`, so a service running unlimited can never do so unnoticed.
-
----
-
-## AuditMiddleware
-
-Builds one record per request and enqueues it without blocking:
-
-```python
-record = AuditRecord(request_id=…, route=…, status_code=…, duration_ms=…,
-                     user_id=…, outcome_code=…, show_id=…, seat_labels=…)
-try:
-    queue.put_nowait(record)
-except QueueFull:
-    metrics.audit_dropped.inc()
-```
-
-The request path never awaits a database write and never awaits queue capacity. `put_nowait` either succeeds or drops, and a drop is counted. The alternative — awaiting capacity — makes audit a source of backpressure on bookings, which inverts the priority: losing an audit row is an inconvenience, failing a booking is a defect.
-
-A bounded queue drained in batches by `workers/audit_writer.py` on its own connection, outside any request transaction. Full design, including the drop policy and shutdown flush, in [10-observability.md](10-observability.md).
-
-Fields are extracted from the request scope and the context vars. The middleware does not read the request body — buffering a body to audit it would double memory per in-flight request; `show_id` comes from path parameters and `seat_labels` from a context var set by the service that already parsed them.
-
----
-
-## Rules for new middleware
-
-- It may not perform a database query on the request path. Readiness is a route, not middleware.
-- It may not block on anything unbounded. Every wait has a timeout.
-- It must be safe to run on a request that fails before the route resolves.
-- It must not consume the request body.
-- It must reset any `ContextVar` it sets, in a `finally`.
-- It goes in the chain where its dependencies are already established, and this document's order table is updated in the same commit.
+`RATE_LIMIT_ENABLED=false` disables limiting entirely, so a load test can isolate the claim path from transport policy. Its state is in the startup log line and reported by `/readyz` as `rate_limit_enabled`, so a service running unlimited cannot do so unnoticed. The test suite runs with it off, because every test client shares one address; `tests/integration/test_rate_limit.py` switches it on for its own tests.

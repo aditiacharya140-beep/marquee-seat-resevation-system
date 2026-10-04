@@ -40,9 +40,9 @@ Verification rejects, in this order: missing or malformed header, bad signature,
 
 ## Passwords
 
-Argon2id via `argon2-cffi`, parameters from config. Hashing is CPU-bound and runs in a bounded thread pool so it cannot stall the event loop — unbounded, a login flood becomes a denial of service against the reserve path.
+Argon2id via `argon2-cffi` with the library's default parameters. Hashing is CPU-bound and runs in a bounded thread pool so it cannot stall the event loop — unbounded, a login flood becomes a denial of service against the reserve path.
 
-Policy (configured, not hardcoded): minimum length, no maximum below 128, no composition rules. Login compares in constant time and returns the same message and comparable latency whether or not the email exists, hashing a dummy value on the miss path to avoid a timing oracle.
+Policy: a configured minimum length (`PASSWORD_MIN_LENGTH`), a maximum of 128, no composition rules. Login compares in constant time and returns the same message and comparable latency whether or not the email exists, hashing a dummy value on the miss path to avoid a timing oracle.
 
 ## Flows
 
@@ -52,7 +52,7 @@ Insert a `user` row with role `user`. Email uniqueness is enforced by `uq_users_
 
 ### Login — `POST /auth/login`
 
-Look up by lowercased email, verify the hash, issue access + refresh. Rate limited tightly: this is the brute-force surface.
+Look up by lowercased email, verify the hash, issue access + refresh. Rate limited tightly per client address: this is the brute-force surface.
 
 ### Guest — `POST /auth/guest`
 
@@ -83,13 +83,12 @@ Accepts a `typ=refresh` token, issues a new access token. Stateless: no server-s
 Every protected route declares its requirement through `Depends`. The handler body never inspects the request for identity.
 
 ```
-get_bearer_token      extract and validate the header shape
-get_current_user      verify the token, build a Principal, bind it to the context var
-require_user          get_current_user, assert typ=access
-require_admin         require_user, assert role == admin, else 403 FORBIDDEN
+get_current_user      read the Authorization header, verify the token (signature,
+                      issuer, expiry, typ=access), build a Principal
+require_admin         get_current_user, assert role == admin, else 403 FORBIDDEN
 ```
 
-`get_current_user` binds the principal to a `ContextVar`, so logs and audit records carry `user_id` without threading it through every signature.
+Exposed as the annotated types `CurrentUser` and `AdminUser` in `api/deps.py`. The principal is passed to the service as an argument; it is not bound to a context variable.
 
 Routes with no principal dependency are public by construction, and the audience of every route is recorded in the table in [06-apis.md](06-apis.md). A route whose audience is not in that table is unreviewed.
 
@@ -136,11 +135,11 @@ At startup, if a configured admin email is set and no admin exists, one is creat
 
 | Threat | Mitigation |
 |---|---|
-| Credential stuffing | Tight per-IP and per-email rate limits on login; uniform failure response and latency |
+| Credential stuffing | A tight per-address rate limit on login; uniform failure response and latency. A per-email limit is future scope |
 | Timing oracle on email existence | Dummy hash computed on the miss path |
 | Token replay after role change | Short access lifetime; RISK-002 |
 | Refresh token used as access token | `typ` claim checked on every business route |
-| Guest enumeration / free-row flooding | Per-IP limit on `/auth/guest`; guest rows are cheap and purgeable, and a guest with no reservations is garbage-collectable |
+| Guest flooding, and seat hoarding through minted guests | A per-address limit on `/auth/guest`. This bounds it and does not close it: each guest carries its own per-user seat limit (RISK-014) |
 | Secret in an image or log | Secret only from the environment; never logged, never in a response, never in a repository |
 | Algorithm confusion | Decoder pinned to a single algorithm; `none` and asymmetric variants rejected |
 | Privilege escalation via body | No identity or role field exists on any authenticated request model |

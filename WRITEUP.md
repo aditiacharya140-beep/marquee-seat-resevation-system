@@ -157,6 +157,7 @@ real attempt.
 | `/readyz` failing | Database unreachable; nothing can be sold |
 | `claim_deadlock` in the logs | The lock order was broken by a change |
 | `reservations_declined_total{reason="lock_timeout"}` climbing | Hot-seat queues are exceeding the lock timeout |
+| `rate_limited_total` climbing on `reserve` or `read` | Real users are being throttled: a ceiling is too low, or the proxy-hop count is wrong and clients share a bucket |
 
 Deliberately **not** paging: a high rate of `seat_taken`, `per_user_limit` or
 `idempotent_replay`. That is the service working during an on-sale, and an alert that
@@ -164,6 +165,9 @@ fires whenever the product succeeds gets muted.
 
 ## Evidence
 
+- **316 tests, 96% line and branch coverage of `app/`**, all against real PostgreSQL
+  with the real migration; nothing is mocked. They have only ever run on the
+  development machine: GitHub Actions is not enabled for the repository.
 - `tests/concurrency/` — one test per invariant against real PostgreSQL: hot seat (60
   contenders → one `201`, 59 × `409`, zero unhandled), per-user limit, one key fired
   20× concurrently, opposite-order multi-seat claims, reconciliation sampled
@@ -191,22 +195,59 @@ fires whenever the product succeeds gets muted.
   the service or the platform's proxy answered. No live latency figure is quoted,
   because the script was then timing its own client-side queue as well.
 
-## What was cut, honestly
+## Rate limiting, and the weakness it only narrows
 
-The design ([mds/](mds/00-overview.md)) covers more than was built. Not built: the
-audit table and its writer (structured logs carry `request_id`, and every row is
-stamped with it), sale windows, and the latency/pool/lock-wait histograms. An unhandled exception is still logged twice, once without its request
-id. None of these touch the claim path.
+The per-user seat limit is per *principal*, guest principals cost nothing to create,
+and a reserve confirms with no payment step. On its own, then, the limit stops one
+account over-buying and does nothing about one client minting accounts. The
+adversarial review made that concrete: 2,500 guests from one client in seconds.
 
-One limit of the design is worth stating plainly. The per-user seat limit is per
-*principal*, guest principals cost nothing to create, and a reserve confirms with no
-payment step — so on its own the limit stops one account over-buying, not one client
-minting accounts. Rate limiting now bounds that: reserve, read and admin routes are
-limited per principal (a crowd behind one address is never throttled as one), and
-guest creation is limited per client address, at one new guest a second sustained.
-That is a bound, not a cure. A patient client, or one with many addresses, can still
-accumulate seats; closing it properly takes something a guest cannot mint — a
-payment step, or a verified identity (RISK-014).
+Rate limiting bounds it. Buckets are keyed by verified principal wherever a token is
+present — so a crowd behind one address is never throttled as one, and a test asserts
+exactly that — and by client address only for sign-in and guest creation. Guest
+creation is held to one a second sustained per address.
+
+That is a bound, not a cure. A patient client, or one with many addresses, still
+accumulates seats; closing it takes something a guest cannot mint, a payment step or
+a verified identity. Removing guests would not help: registration is exactly as free.
+
+One thing only the live deployment could show. The client address is read from the
+right of `X-Forwarded-For` by a configured hop count, because the left is whatever
+the client sent. With the count at 1, a 429 from the deployed service named an
+internal `10.x` address: the platform's own proxy, shared by every client. Every 429
+names the address it was applied to precisely so that a wrong setting is visible from
+outside, and that is how this was found.
+
+## What is not built
+
+The design set in [mds/](mds/00-overview.md) now describes the service as it is;
+[mds/17-future-scope.md](mds/17-future-scope.md) is the one place that lists what it
+is not. In short:
+
+- **The audit trail.** Structured logs carry `request_id` and every row is stamped
+  with it, so "what did this request do" is answerable; "every declined reserve on
+  this show in ten minutes" is not, without a log search.
+- **Part of the metric catalogue**: the latency histogram, pool gauges and the
+  lock-wait histogram. Two alerts the design wants can therefore only fire after the
+  fact.
+- **Taking a show off sale**, and sale windows.
+- **Refresh-token revocation**; refresh is stateless.
+- **A single log line for a crash**: an unhandled exception is logged twice, once
+  without its request id.
+
+And what is built but less proven than it should be: only the claim path has had an
+adversarial review; the burst has run live at 200 buyers, never at full scale; the
+negative controls were run by hand, not as a permanent test; and nobody has verified
+the README from a clean clone.
+
+## What comes next
+
+1. Turn CI on. Until then nothing has been verified off one machine.
+2. Review auth, shows and the rate limiter the way the claim path was reviewed.
+3. Decide how a principal earns the right to reserve — the one weakness with a
+   product consequence.
+4. The burst at full scale against the live URL.
+5. Audit, then the missing metrics.
 
 ## AI usage
 

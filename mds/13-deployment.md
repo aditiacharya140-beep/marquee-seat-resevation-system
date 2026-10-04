@@ -16,7 +16,7 @@ stage 2  runtime   slim base, copy the venv, copy app, non-root user, entrypoint
 | Property | Choice | Why |
 |---|---|---|
 | Base | `python:3.13-slim` | Pinned minor version. `latest` makes a reproducible build impossible. |
-| Dependencies | Lockfile, hash-pinned, installed in the builder | A float on a transitive dependency is a build that works today and fails at review |
+| Dependencies | Direct dependencies pinned exactly in `pyproject.toml`, installed in the builder | Transitive dependencies are **not** hash-pinned (RISK-008) |
 | User | Non-root, created in the image | No reason for a web process to be root |
 | Build cache | Dependencies copied and installed before application code | Code changes rebuild in seconds |
 | Entrypoint | Script that runs migrations, then execs uvicorn | `exec` so uvicorn is PID 1 and receives SIGTERM directly |
@@ -24,11 +24,11 @@ stage 2  runtime   slim base, copy the venv, copy app, non-root user, entrypoint
 | Healthcheck | `HEALTHCHECK` hitting `/healthz` | Liveness, not readiness — a healthcheck that touches the database restarts a healthy process during a database blip |
 | Image contents | No tests, no `.git`, no local env files | `.dockerignore` enforced |
 
-`docker-compose.yml` brings up Postgres and the service for local work with one command — which matters here, because this machine has neither Postgres nor Docker installed yet, and the compose file is what makes that a one-step fix rather than a setup document.
+`docker-compose.yml` brings up Postgres and the service for local work with one command.
 
 ### Migrations on startup
 
-The entrypoint runs `alembic upgrade head` before starting the server, then `exec`s uvicorn.
+The entrypoint runs `alembic -c app/alembic.ini upgrade head` before starting the server, then `exec`s uvicorn. A failed migration fails the boot. `alembic.ini` lives inside `app/` because the image copies `app/` and nothing else, and names the project root on `sys.path` because the `alembic` console script does not (RISK-011, LEARN-013).
 
 Honest trade-off: with multiple instances, concurrent migrations race. Alembic's version table makes this safe for a single migration path (the loser finds nothing to apply), but a long migration during a rolling deploy is a real hazard. For a single instance it is the simplest thing that cannot be forgotten, which is worth more than elegance here. Recorded as RISK-005; the upgrade path is a separate pre-deploy release phase.
 
@@ -73,13 +73,18 @@ Every value is an environment variable read by `core/config.py`. No defaults for
 | `DEFAULT_CURRENCY` | Used when a show omits `currency`. The column has no database default, so this is the single source |
 | `DB_POOL_MIN`, `DB_POOL_MAX`, `DB_ACQUIRE_TIMEOUT_SECONDS`, `DB_SERVER_MAX_CONNECTIONS` | Pool sizing — see [11-scalability.md](11-scalability.md) |
 | `DB_STATEMENT_TIMEOUT_MS`, `DB_LOCK_TIMEOUT_MS`, `DB_TIMEOUT_MARGIN_MS`, `DB_IDLE_TXN_TIMEOUT_MS` | Session guards and the required gap between the lock and statement timeouts |
-| `RATE_LIMIT_ENABLED`, `RATE_LIMIT_<CLASS>_*` | Per-class ceilings, tunable without a redeploy |
-| `AUDIT_QUEUE_MAX`, `AUDIT_BATCH_SIZE`, `AUDIT_FLUSH_INTERVAL_MS` | Audit write path |
-| `GAUGE_REFRESH_SECONDS`, `GAUGE_MAX_SHOWS` | Metric refresh and cardinality cap |
-| `IDEMPOTENCY_WAIT_MS`, `IDEMPOTENCY_POLL_INTERVAL_MS`, `IDEMPOTENCY_STALE_SECONDS`, `IDEMPOTENCY_RETENTION_HOURS` | Key lifecycle |
+| `RATE_LIMIT_ENABLED`, `RATE_LIMIT_RESERVE` / `_READ` / `_AUTH` / `_GUEST` / `_ADMIN` | The switch and the per-class ceilings, each `<requests>/<seconds>s` |
+| `RATE_LIMIT_TRUSTED_PROXY_HOPS`, `RATE_LIMIT_MAX_BUCKETS` | How many proxies this deployment runs in front of the service, and the bound on bucket memory |
+| `GAUGE_MAX_SHOWS` | Cardinality cap on the per-show gauge |
+| `READYZ_TIMEOUT_SECONDS` | How long `/readyz` waits for the database |
+| `PASSWORD_MIN_LENGTH`, `PASSWORD_HASH_WORKERS` | Password policy and the Argon2 thread-pool width |
+| `PAGE_SIZE_DEFAULT`, `PAGE_SIZE_MAX` | List endpoints |
+| `MAX_SEATS_PER_SHOW`, `MAX_SEAT_LABEL_LENGTH` | Show creation bounds |
+| `IDEMPOTENCY_WAIT_MS`, `IDEMPOTENCY_POLL_INTERVAL_MS`, `IDEMPOTENCY_STALE_SECONDS`, `IDEMPOTENCY_RETENTION_HOURS`, `IDEMPOTENCY_KEY_MAX_LENGTH`, `IDEMPOTENCY_RETRY_AFTER_SECONDS` | Key lifecycle |
 
-`SWEEPER_INTERVAL_SECONDS` and `SWEEPER_BATCH_SIZE` are **removed**. There is no sweeper (ADR-017): expiry is a predicate arm inside the claim, so there is no interval to tune and no batch to size.
-| `LOG_LEVEL`, `LOG_SAMPLE_DEBUG` | Log volume |
+| `LOG_LEVEL`, `LOG_QUEUE_MAX` | Log volume, and the buffer between the event loop and the stdout writer |
+
+`.env.example` lists every variable, and a test fails if it and `Settings` ever declare different sets. `AUDIT_*`, `GAUGE_REFRESH_SECONDS` and `LOG_SAMPLE_DEBUG` were declared with no reader and have been removed.
 
 Startup logs the resolved configuration with secrets redacted, so what a running instance actually believes is recoverable from its first log lines rather than inferred.
 
@@ -92,12 +97,18 @@ Every check is labelled **necessary** or **sufficient**, so the first kind is ne
 | Check | Form | Kind | Why this quantity |
 |---|---|---|---|
 | Guest token outlives a hold | `GUEST_TOKEN_TTL_SECONDS > MAX_HOLD_TTL_SECONDS` | necessary | `MAX_HOLD_TTL_SECONDS` is the longest hold the service will ever issue, so a configuration failing this is one in which no hold could reliably be confirmed by a guest. There is no single "the hold TTL" to add a margin to — a hold may request any value up to the show maximum. The residual case, a token minted shortly before a maximum-length hold, is RISK-006 and is not visible to a startup check |
-| Pool fits the server | `DB_POOL_MAX <= DB_SERVER_MAX_CONNECTIONS - 1` | sufficient | The reserved connection is the audit writer's, which lives outside the request pool. `DB_SERVER_MAX_CONNECTIONS` is read from the server, never guessed — it is 100 locally and differs on a managed instance (LEARN-003) |
-| Acquire timeout versus statement timeout | `DB_ACQUIRE_TIMEOUT_SECONDS * 1000 > DB_STATEMENT_TIMEOUT_MS` | necessary | An acquire timeout below the statement timeout guarantees refusals under any contention at all: a request would be turned away while the single statement ahead of it was still legitimately running. The *sufficient* condition — that the acquire timeout exceeds the queue drain — cannot be a startup check, because drain time depends on burst size and round trips per request and neither is configuration. It is established by measurement in `SEAT-058` and the chosen numbers recorded in the ledger |
+| Pool fits the server | `DB_POOL_MAX <= DB_SERVER_MAX_CONNECTIONS - 1` | sufficient | One connection is kept back for the boot-time migration and an operator's own session. `DB_SERVER_MAX_CONNECTIONS` is read from the server, never guessed — it is 100 locally and differs on a managed instance (LEARN-003) |
+| Acquire timeout versus statement timeout | `DB_ACQUIRE_TIMEOUT_SECONDS * 1000 > DB_STATEMENT_TIMEOUT_MS` | necessary | An acquire timeout below the statement timeout guarantees refusals under any contention at all: a request would be turned away while the single statement ahead of it was still legitimately running. The *sufficient* condition — that the acquire timeout exceeds the queue drain — cannot be a startup check, because drain time depends on burst size and round trips per request and neither is configuration. It has **not** been established by measurement yet |
 | Timeout ordering | `DB_STATEMENT_TIMEOUT_MS >= DB_LOCK_TIMEOUT_MS + DB_TIMEOUT_MARGIN_MS` | sufficient | On the claim path the lock timeout must fire first, so a contention outcome is a 409 and a statement timeout is unambiguously a fault worth a 503 (ADR-027). The margin exists because a claim that waits out most of its lock budget still has work to do afterwards |
 | Default event kind is permitted | `DEFAULT_EVENT_KIND in ALLOWED_EVENT_KINDS` | sufficient | Otherwise every show that omits `event_kind` fails validation at request time, which is a boot-time mistake discovered by a client |
 
 ---
+
+## The deployed service
+
+`https://seat-reservation-vw5k.onrender.com`, one free instance and a free managed PostgreSQL 16, both in Singapore, deploying from `main`. `render.yaml` declares them. Two values were set in the dashboard rather than by the blueprint: `ADMIN_EMAIL` and `ADMIN_PASSWORD`, which are secrets, and — because the blueprint was created from an earlier branch — `RATE_LIMIT_GUEST` and `RATE_LIMIT_TRUSTED_PROXY_HOPS`.
+
+**The proxy-hop count on Render is not 1.** With it at 1 the limiter resolved every client to one of the platform's internal `10.x` addresses, so all clients shared a bucket (LEARN-018). The correct value has to be found by raising it until a 429's `details.limited_by` shows the caller's own public address.
 
 ## Cold start
 
@@ -109,6 +120,7 @@ Render's free tier spins a service down after idle. The first request then pays 
 | `/readyz` as the gate | Platform routes traffic only when the database is genuinely reachable |
 | Burst script warms first | Phase 0 polls `/readyz` until ready before measuring — otherwise a cold start is recorded as load |
 | Pool pre-warm | `DB_POOL_MIN` connections opened at startup so the first request does not pay connection setup |
+| Not measured | How long a cold start actually takes on the free instance has never been recorded |
 | Documented in the README | Anyone hitting a spun-down URL sees the first request take seconds; saying so prevents it being read as a fault |
 
 Recorded as RISK-001. The free tier's other constraint — a managed free database expiring after a fixed window — is tracked in the ledger with the recreation procedure, because an expired database is a live URL that returns 503 to everyone.
@@ -117,8 +129,8 @@ Recorded as RISK-001. The free tier's other constraint — a managed free databa
 
 ## Deploy procedure
 
-1. Push to `main`; CI runs lint, types, unit, integration, concurrency at reduced scale, and a container smoke test from a clean checkout.
-2. Render builds the image and deploys on green.
+1. Merge to `main`. CI is written to run lint, types, the suite and a container smoke test, but **GitHub Actions is not enabled for the repository**, so today nothing gates the deploy.
+2. Render builds the image from `main` and deploys it.
 3. Entrypoint applies migrations, then starts uvicorn.
 4. Platform polls `/readyz` and routes traffic only once ready.
 5. Post-deploy verification, every time: `/healthz`, `/readyz`, `/metrics`, create a throwaway show, reserve against it, confirm the invariant, check the startup log line for the resolved configuration.
@@ -140,15 +152,14 @@ Migrations are forward-only, so a rollback across a schema change needs the old 
 
 | Symptom | First check | Likely cause | Action |
 |---|---|---|---|
-| `/readyz` 503 | `checks.database.error` | Database down, credentials rotated, connection ceiling | Verify the database; check `db_pool_waiting` |
+| `/readyz` 503 | `checks.database.error` | Database down, credentials rotated, connection ceiling | Verify the database |
 | 5xx on reserve | `unhandled_exceptions_total`, error logs by request id | A genuine bug, or pool exhaustion | A pool cause is a config fix; anything else is a code defect |
 | Invariant mismatch sustained | Counts query versus gauges | Divergent effective-status expression, or a real break | Compare the three usages; check for a `uq_seat_active_claim` violation |
 | Backstop index violation | `error` logs for that constraint | The guarded claim has a bug | Page. The service is selling seats twice. |
 | Deadlock logged | The two statements involved | A new path violates the lock order | Page. The ordering argument in [04](04-concurrency-and-atomicity.md) is wrong. |
 | Seats reported held long past their expiry | `GET /shows/{id}` against the row's `hold_expires_at` | A reader using stored status instead of the derived expression | A code defect, not an operational one. Compare every reader against `db/sql.py` |
 | `idempotency_keys` growing | Row count, table size | No retention purge has run (RISK-007) | Run the retention maintenance query below |
-| Audit dropping | `audit_queue_depth` | Writer stalled or database slow | Raise batch size; check write latency |
-| 429s during a burst | `rate_limited_total{route_class}` | Ceiling too low for the traffic shape | Raise the env ceiling; no redeploy required |
+| 429s during a burst | `rate_limited_total{route_class}`, and `details.limited_by` on a 429 | Ceiling too low for the traffic — or `limited_by` shows an internal address, meaning `RATE_LIMIT_TRUSTED_PROXY_HOPS` is too low and clients are sharing a bucket | Raise the ceiling, or correct the hop count |
 | Cold-start timeouts | Platform logs | Idle spin-down | Expected on the free tier; warm before measuring |
 
 Every row starts from a signal that exists. A runbook entry whose first step is "add logging" is a gap in [10-observability.md](10-observability.md), not a runbook entry.
@@ -164,7 +175,7 @@ DELETE FROM idempotency_keys
                WHERE expires_at <= now() ORDER BY expires_at LIMIT $batch);
 ```
 
-Backed by `idempotency_repo.purge_expired`, served by `ix_idem_expiry`. Safe to run at any time and against a live service: it touches no row any request path reads, since a key past `expires_at` is older than any plausible client retry.
+Served by `ix_idem_expiry`. Run by hand for now: no repository method or schedule exists for it. Safe to run at any time and against a live service: it touches no row any request path reads, since a key past `expires_at` is older than any plausible client retry.
 
 Lapsed holds' `reservation_seats` and `reservations` rows are deliberately **not** tidied here. Closing them is cosmetic — every reader derives effective status, and the next claim on the seat closes its claim row anyway (ADR-019) — and a cleanup job for all three concerns at once is the fix when growth justifies it.
 

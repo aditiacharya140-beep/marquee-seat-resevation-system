@@ -19,6 +19,8 @@ The fix is not to check more carefully. It is to make the decision and the effec
 
 ## Mechanism 1 — guarded conditional UPDATE (single seat)
 
+This is the mechanism in its simplest form, and it is how the argument is easiest to read. **The code does not have a separate single-seat statement**: every reserve, including one seat, goes through Mechanism 2, which is the same decision with an explicit lock order.
+
 ```sql
 UPDATE seats
    SET status          = CASE WHEN $ttl_seconds IS NULL THEN 'confirmed' ELSE 'held' END,
@@ -231,7 +233,7 @@ SHA-256 over the canonical serialization of exactly this object (ADR-021):
 
 The operation name and the show id come from the **route**, not the body, so a key cannot escape its scope by omitting a field. The idempotency key itself, the request id, and headers are excluded — the key is the lookup, not part of what is being fingerprinted.
 
-Canonicalization: object keys sorted, whitespace normalized, seat labels sorted and de-duplicated, null-valued optional fields omitted. `{"seats":["A12","A13"]}` and `{ "seats": ["A13", "A12"] }` against the same show produce the same fingerprint because they are the same request; the same body against a different show does not, so it is a clean 409 `IDEMPOTENCY_KEY_REUSED`. Canonicalization lives in `utils/canonical_json.py` and is unit-tested against reordering, whitespace, casing, and the different-show case specifically.
+Canonicalization: object keys sorted, whitespace normalized, seat labels sorted and de-duplicated, null-valued optional fields omitted. `{"seats":["A12","A13"]}` and `{ "seats": ["A13", "A12"] }` against the same show produce the same fingerprint because they are the same request; the same body against a different show does not, so it is a clean 409 `IDEMPOTENCY_KEY_REUSED`. Canonicalization lives in `utils/canonical_json.py`; the reserve fingerprint is built in `reservation_service` and unit-tested for the different-show, different-seats and TTL cases.
 
 Omitting an absent `hold_ttl_seconds` rather than writing `null` matters since ADR-017: "no TTL" and "TTL 120" are different operations with different outcomes, and the fingerprint must separate them.
 
@@ -302,13 +304,13 @@ The reclaim is **lazy**, triggered by the arrival of a duplicate rather than by 
 
 ### A waiter holds no connection between polls
 
-The bounded poll is a client-facing latency budget, not a database-side one. A waiter acquires a connection, performs one indexed point read on `uq_idem_user_key`, **releases the connection, and only then sleeps** (ADR-026). `idempotency_repo.get` therefore takes no connection and acquires its own — the same signature trick that enforces `try_claim`'s separate transaction.
+The bounded poll is a client-facing latency budget, not a database-side one. A waiter acquires a connection, performs one indexed point read on `uq_idem_user_key`, **releases the connection, and only then sleeps** (ADR-026). The service acquires a connection for each poll and releases it before the sleep; `idempotency_repo.get` is called on a connection that is not in a transaction.
 
 Holding the connection across the wait would be a self-inflicted outage: a few hundred concurrent duplicates would occupy the pool for the whole wait budget, exhaust it, and produce exactly the 503s ADR-016 forbids. The cost of the fix is round trips — at the current defaults, up to 40 point reads for a waiter that times out — which is the cheap resource. Connection-seconds are the scarce one.
 
 ### Retention
 
-Keys carry `expires_at`. With the sweeper gone there is no in-process loop to purge them: retention is a scheduled maintenance query backed by `idempotency_repo.purge_expired`, documented in the `13-deployment.md` runbook and tracked as RISK-007. Growth is one row per reserve that won its key — trivial over a burst, material over months, which is the timescale on which this is maintenance rather than machinery.
+Keys carry `expires_at`. With the sweeper gone there is no in-process loop to purge them: retention is a scheduled maintenance query, documented in the `13-deployment.md` runbook and tracked as RISK-007. No repository method or schedule for it exists yet. Growth is one row per reserve that won its key — trivial over a burst, material over months, which is the timescale on which this is maintenance rather than machinery.
 
 ## Holds and expiry
 
