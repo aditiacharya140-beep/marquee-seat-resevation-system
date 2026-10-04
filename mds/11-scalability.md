@@ -76,7 +76,7 @@ Not the 20,000-request burst the design is sized for. What exists:
 |---|---|
 | Local, one uvicorn worker, pool of 20, 500 requests in flight | 3,530 reserves in 9.6s; p50 0.8s, p95 3.1s; zero 5xx |
 | Reviewer's in-process hot seat, 2,500 principals on one seat | One 201, 2,499 × 409, no 503, 1.2s |
-| Live, Render free instance, 200 buyers + 80 on a hot seat | Every invariant held, zero 5xx; latency not recorded reliably |
+| Live, Render free instance, 400 buyers + 150 on a hot seat, 50 in flight, rate limiting on | 580 reserves in 31s; every invariant held, one winner of 150, zero 5xx; p50 2.2s, p95 7.1s |
 
 At 500 in flight against a pool of 20 the time is spent queueing for a connection and in one Python process, not waiting on row locks. Nothing has been profiled or tuned, and the acquire timeout has not been checked against the drain time of a full-scale burst.
 

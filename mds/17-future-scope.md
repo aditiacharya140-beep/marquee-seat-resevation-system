@@ -84,7 +84,7 @@ Starlette's `ServerErrorMiddleware` re-raises after the 500 handler has answered
 
 Built: warm-up, own show, stampede with reconciliation sampled mid-flight, barrier-released hot seat, one key fired concurrently, limit probe, reconciliation against the API, the 201 bodies and `/metrics`, non-zero exit on violation.
 
-Not built: a spoofed-identity phase, a confirm/cancel/re-book lifecycle phase, the same key with a mutated body, more than one hot seat, the per-phase table, a self-test that injects each violation and asserts the non-zero exit, `make burst`, and a run at full scale against the live URL — the live runs so far are 200 buyers.
+Not built: a spoofed-identity phase, a confirm/cancel/re-book lifecycle phase, the same key with a mutated body, more than one hot seat, the per-phase table, a self-test that injects each violation and asserts the non-zero exit, `make burst`, and a run at the scale the design is sized for — the largest live run is the script's default, 400 buyers and 150 on one seat.
 
 ## 11. Operating at scale
 

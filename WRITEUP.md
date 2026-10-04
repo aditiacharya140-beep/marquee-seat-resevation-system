@@ -184,16 +184,19 @@ fires whenever the product succeeds gets muted.
   5xx**, hot seat 1 winner of 500, every reconciliation check green. Latency at that
   depth: p50 0.8s, p95 3.1s. That is 500 requests sharing 20 connections and one
   Python process — requests wait rather than fail — and it was not tuned or profiled.
-- **Live burst** against the Render free instance (`./burst.sh <URL> --users 200 --hot
-  80`): 310 reserve requests — 106 created, 179 `SEAT_TAKEN`, 19 replays, 6
-  `PER_USER_LIMIT`, hot seat 1 winner of 80, 23 mid-flight reconciliation samples
-  green, `/metrics` equal to the API, `unhandled_exceptions_total` unmoved, zero 5xx.
-  An earlier run of the same burst had one response in 310 that was not JSON. Every
-  correctness check passed on that run too and the service's own fault counter did not
-  move, but the cause was not established: the script at the time discarded the status
-  code, and a redeploy was in progress. The script now records the status and whether
-  the service or the platform's proxy answered. No live latency figure is quoted,
-  because the script was then timing its own client-side queue as well.
+- **Live burst** against the Render free instance, at the script's default size with
+  rate limiting on and correctly configured (`./burst.sh <URL> --concurrency 50`):
+  400 buyers on 213 seats plus 150 contenders for one hot seat — 580 reserve requests,
+  132 created, 423 `SEAT_TAKEN`, 19 replays, 6 `PER_USER_LIMIT`. Hot seat: 1 winner of
+  150. All 24 mid-flight reconciliation samples held, no seat was sold twice,
+  `/metrics` equalled the API, `unhandled_exceptions_total` did not move, zero 5xx and
+  zero dropped requests. Latency at 50 in flight: p50 2.2s, p95 7.1s — a fraction of
+  a shared CPU, and not tuned.
+  An earlier, smaller live run had one response in 310 that was not JSON. Every
+  correctness check passed on that run too and the service's fault counter did not
+  move, but the cause was never established: the script at the time discarded the
+  status code, and a redeploy was in progress. The script now records the status and
+  whether the service or the platform's proxy answered; it has not recurred.
 
 ## Rate limiting, and the weakness it only narrows
 
@@ -240,7 +243,7 @@ is not. In short:
   without its request id.
 
 And what is built but less proven than it should be: only the claim path has had an
-adversarial review; the burst has run live at 200 buyers, never at full scale; the
+adversarial review; the burst has run live at its default size, never near the scale the design is sized for; the
 negative controls were run by hand, not as a permanent test; and nobody has verified
 the README from a clean clone.
 
@@ -250,7 +253,7 @@ the README from a clean clone.
 2. Review auth, shows and the rate limiter the way the claim path was reviewed.
 3. Decide how a principal earns the right to reserve — the one weakness with a
    product consequence.
-4. The burst at full scale against the live URL.
+4. A burst far beyond the default size against the live URL.
 5. Audit, then the missing metrics.
 
 ## AI usage
