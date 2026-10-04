@@ -7,8 +7,9 @@ from the argument, the environment, or ./.env, in that order. For the live servi
 is the database's *external* URL from the Render dashboard.
 
 One transaction. Reservations are deleted before their show because that foreign key
-does not cascade; seats and per-user quota rows go with the show. The guests the burst
-minted are left: nothing marks them apart from any other guest.
+does not cascade; seats and per-user quota rows go with the show. Accounts registered by
+`burst.sh --accounts` are deleted too, by their `burst-…@example.com` address. Guests
+the burst minted are left: nothing marks them apart from any other guest.
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ import asyncpg
 
 #: The name burst/burst.py gives every show it creates.
 PATTERN = "burst-%"
+#: The address it gives every account it registers.
+ACCOUNT_PATTERN = "burst-%@example.com"
 
 
 def database_url(argument: str | None) -> str:
@@ -53,13 +56,18 @@ async def main(args: argparse.Namespace) -> None:
             PATTERN,
         )
         print(f"database {target.path.lstrip('/')} on {target.hostname}")
-        if not shows:
-            print("no burst shows: nothing to delete")
+        accounts = await connection.fetchval(
+            "SELECT count(*) FROM users WHERE email LIKE $1", ACCOUNT_PATTERN
+        )
+        if not shows and not accounts:
+            print("no burst shows or accounts: nothing to delete")
             return
         for show in shows:
             booked = f"{show['total_seats']} seats, {show['reservations']} reservations"
             print(f"  {show['name']}: {booked}")
-        if not args.yes and input(f"delete {len(shows)} show(s)? [y/N] ").lower() != "y":
+        print(f"  {accounts} burst accounts")
+        question = f"delete {len(shows)} show(s) and {accounts} account(s)? [y/N] "
+        if not args.yes and input(question).lower() != "y":
             sys.exit("nothing deleted")
 
         async with connection.transaction():
@@ -82,6 +90,23 @@ async def main(args: argparse.Namespace) -> None:
                 print(f"  {table}: {done.split()[-1]} rows")
             done = await connection.execute("DELETE FROM shows WHERE name LIKE $1", PATTERN)
             print(f"  shows: {done.split()[-1]} rows, with their seats")
+            # Only an account with nothing left on a real show: one that was also used
+            # to book through the page keeps its tickets, and so stays.
+            await connection.execute(
+                """
+                CREATE TEMP TABLE spent ON COMMIT DROP AS
+                SELECT u.id FROM users u
+                 WHERE u.email LIKE $1
+                   AND NOT EXISTS (SELECT 1 FROM reservations r WHERE r.user_id = u.id)
+                """,
+                ACCOUNT_PATTERN,
+            )
+            for table in ("idempotency_keys", "user_show_quota"):
+                await connection.execute(
+                    f"DELETE FROM {table} WHERE user_id IN (SELECT id FROM spent)"
+                )
+            done = await connection.execute("DELETE FROM users WHERE id IN (SELECT id FROM spent)")
+            print(f"  users: {done.split()[-1]} rows")
     finally:
         await connection.close()
 
