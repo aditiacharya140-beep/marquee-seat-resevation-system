@@ -158,7 +158,7 @@ async def list_for_user(
 async def cancel_owned(conn: asyncpg.Connection, reservation_id: UUID, user_id: UUID) -> bool:
     """The decision for a cancel: one guarded UPDATE whose row count is the answer.
     A confirmed booking is cancellable by its owner, as is a live hold; a lapsed hold
-    is not — its seats are already effectively available (ADR-036)."""
+    is not — its seats are already effectively available (ADR-040)."""
     return await _decide(
         conn,
         """

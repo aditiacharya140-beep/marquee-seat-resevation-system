@@ -79,7 +79,7 @@ async def me(principal: Principal) -> User:
 
 async def bootstrap_admin() -> None:
     """The admin account is whatever configuration says it is: created if absent, and
-    its password reset to the configured one on every start (ADR-037). Changing the
+    its password reset to the configured one on every start (ADR-041). Changing the
     admin's credentials is therefore a configuration change and a restart."""
     password_hash = await security.hash_password(settings.admin_password.get_secret_value())
     async with acquire() as conn:

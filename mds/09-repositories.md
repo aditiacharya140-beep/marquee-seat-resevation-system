@@ -86,7 +86,7 @@ close_claims_for_reservation(conn, reservation_id)            -> None
 
 `get_owned` and `list_for_user` take the owner as part of the `WHERE` clause. There is no `get(reservation_id)` to accidentally use without an ownership filter — the unsafe method does not exist, which is stronger than remembering to filter. Both apply the reservation effective-status expression, so a lapsed hold reads `expired`, never `held`.
 
-`cancel_owned` and `confirm_owned` are the guarded `UPDATE`s on the `reservations` row, with the owner in the `WHERE` clause. Confirm matches a live hold; cancel matches a live hold **or a confirmed reservation** (ADR-036). `False` is the decision; the service then calls `get_owned` to choose the decline code, which is diagnosis and not control.
+`cancel_owned` and `confirm_owned` are the guarded `UPDATE`s on the `reservations` row, with the owner in the `WHERE` clause. Confirm matches a live hold; cancel matches a live hold **or a confirmed reservation** (ADR-040). `False` is the decision; the service then calls `get_owned` to choose the decline code, which is diagnosis and not control.
 
 `close_superseded_claims` is Mechanism 3 (ADR-019): called **after** the claim and **before** the insert, in T2. It must never be folded into the insert's statement (LEARN-009).
 

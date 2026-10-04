@@ -350,7 +350,7 @@ UPDATE reservations
    AND status = 'held' AND hold_expires_at > now()
 RETURNING id, show_id, seat_count, amount_paise, currency, confirmed_at;
 
--- cancel: a confirmed booking, or a live hold (ADR-036)
+-- cancel: a confirmed booking, or a live hold (ADR-040)
 UPDATE reservations
    SET status='cancelled', cancelled_at=now(), hold_expires_at=NULL,
        updated_at=now(), request_id=$request_id
@@ -412,7 +412,7 @@ Four properties, each load-bearing:
 
 **Zero rows from the decision statement** means the service must still say *why*. It re-reads the reservation owner-scoped, using the reservation effective-status expression, purely to choose the code: `cancelled` → 200 for a repeat cancel or 409 `RESERVATION_CANCELLED` for a confirm; `confirmed` → 200 for a repeat confirm (a cancel of a confirmed reservation succeeds, so it does not reach this read); effectively `expired` → 409 `RESERVATION_EXPIRED`; absent or not owned → 404 `RESERVATION_NOT_FOUND`. That read is outside the lock and may observe a later state than the one that caused the decline. It is diagnosis, not control: the decision was already made and committed to, and every state the read can report is a state the reservation genuinely held.
 
-**Cancel releases a confirmed booking too (ADR-036).** A reserve confirms by default, so a cancel that refused confirmed reservations refused the normal case. The release is safe for the same reason it is safe for a hold: it is guarded on `reservation_id`, and a seat is only ever confirmed to the reservation whose id it carries. A confirmed seat cannot lapse, so there is no window in which it could have been re-claimed while still naming this reservation.
+**Cancel releases a confirmed booking too (ADR-040).** A reserve confirms by default, so a cancel that refused confirmed reservations refused the normal case. The release is safe for the same reason it is safe for a hold: it is guarded on `reservation_id`, and a seat is only ever confirmed to the reservation whose id it carries. A confirmed seat cannot lapse, so there is no window in which it could have been re-claimed while still naming this reservation.
 
 Cancel of a lapsed hold is therefore 409 `RESERVATION_EXPIRED`, not a silent successful release. Nothing is leaked by refusing: the seats are already effectively available, and their stale `reservation_seats` rows are closed by the next claim under Mechanism 3.
 

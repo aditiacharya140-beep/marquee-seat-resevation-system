@@ -16,12 +16,12 @@ Each item says what it is, why it is not built, and what picking it up involves.
 
 ## 2. Audit trail and admin console — built; what remains
 
-Both exist (ADR-038). Still owed:
+Both exist (ADR-042). Still owed:
 
 - **Retention.** Nothing purges `audit_log`; it grows by one row per request. Partitioning by `occurred_at` with a retention window is the plan.
 - **Aggregates off the request pool.** The console's queries borrow a pooled connection. They are bounded by window and row limit, but under a burst they compete with bookings for the pool; a second small pool or the writer's connection would isolate them.
 - **A durable log view.** The console shows this process's last `LOG_BUFFER_MAX` lines from memory, which a restart empties. Shipping logs to a store is the real answer.
-- **An unpublished admin.** The demo's admin sign-in is in the README by decision (ADR-037). A real deployment needs the opposite, and admin actions audited under `/admin` rather than exempted.
+- **An unpublished admin.** The demo's admin sign-in is in the README by decision (ADR-041). A real deployment needs the opposite, and admin actions audited under `/admin` rather than exempted.
 - **Browser coverage.** The console has been exercised through its API and one local run, not across browsers.
 
 ## 3. (merged into item 2)

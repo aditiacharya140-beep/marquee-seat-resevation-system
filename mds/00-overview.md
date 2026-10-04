@@ -33,8 +33,8 @@ These are settled. Each is argued in its own document and recorded as an ADR in 
 | Framework failures | Unmatched routes and bad methods answer inside the error envelope, not Starlette's default shape (ADR-023) |
 | Guests | Real user rows flagged `is_guest`, token-derived like any principal, upgradeable |
 | Rate limiting | Per-principal wherever a token exists, per client address only for sign-in and guest creation; every ceiling env-tunable (ADR-034) |
-| Audit | One row per request through a bounded buffer that drops rather than waits, drained by a batched writer on its own connection (ADR-038) |
-| Cancel | The owner can cancel a confirmed booking or a live hold; the release is guarded on the reservation's own id (ADR-036) |
+| Audit | One row per request through a bounded buffer that drops rather than waits, drained by a batched writer on its own connection (ADR-042) |
+| Cancel | The owner can cancel a confirmed booking or a live hold; the release is guarded on the reservation's own id (ADR-040) |
 | Key ownership | The idempotency key row's id is the ownership token: a stale takeover rotates it and the claim locks it first (ADR-033) |
 
 ## Document map

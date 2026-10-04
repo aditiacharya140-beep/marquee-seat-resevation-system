@@ -397,3 +397,4 @@ ul { margin: 0; padding: 0; list-style: none; }
 }
 .dialog::backdrop { background: rgba(4, 8, 16, .7); }
 .dialog h2 { margin: 0; font-size: 18px; }
+#auth-switch { justify-self: start; color: var(--accent-hover); }

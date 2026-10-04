@@ -967,7 +967,7 @@ Completes LEARN-018, by test against the live service from one machine:
 
 **Consequences** One URL and one deployment; the image changes by three files. The page adds nothing to the booking logic and uses only existing endpoints. It polls `GET /shows/{id}` every four seconds per open tab, which is `read` traffic keyed by principal. Guest issuance and sign-in are limited per client address, so the page depends on `RATE_LIMIT_TRUSTED_PROXY_HOPS` being right on Render; it is, as of LEARN-019.
 
-## ADR-036 — Cancel releases a confirmed reservation
+## ADR-040 — Cancel releases a confirmed reservation
 
 **Date** 2026-10-05
 
@@ -979,7 +979,7 @@ Completes LEARN-018, by test against the live service from one machine:
 
 **Consequences** Supersedes the cancel half of ADR-022 and rewrites REQ-031. There is no refund or cancellation window, because there is no payment. `RESERVATION_CONFIRMED` is removed from the registry: nothing can raise it any more.
 
-## ADR-037 — The admin account follows configuration, and the demo's is published
+## ADR-041 — The admin account follows configuration, and the demo's is published
 
 **Date** 2026-10-05
 
@@ -989,7 +989,7 @@ Completes LEARN-018, by test against the live service from one machine:
 
 **Consequences** Anyone can act as admin on the demo: create shows, read the audit trail and logs. Bounded by what an admin can do — nothing deletes or edits, and no secret reaches a log line. An earlier admin under a different email is not demoted. This is a demo decision and is the opposite of what a real deployment needs; the write-up says so.
 
-## ADR-038 — Build the audit trail and an admin console; logs readable from it
+## ADR-042 — Build the audit trail and an admin console; logs readable from it
 
 **Date** 2026-10-05
 
@@ -1007,3 +1007,14 @@ The audit trail measures duration at the innermost layer. Over a local burst of 
 
 **Implication** Under load the wait is in front of the handler — connections queued on one Python process — not in the database and not on row locks. The lever is CPU and process count, not SQL. It is also why the free instance, with a fraction of a CPU, serves about 19 bookings a second however the queries are written.
 
+## ADR-037 — The web page requires an account to book; the API still accepts guests
+
+**Date** 2026-10-05
+
+**Context** The page gave every visitor a guest session and let it book. A guest is identified only by its token: one hour, no refresh token (`05-auth-and-rbac.md`), kept in the tab's session storage. So a guest's confirmed ticket became unreachable when the tab closed or the hour passed. The seat stayed sold; no one could see, show or cancel the ticket. Found by the user, using the live page.
+
+**Options** (a) Ask for a mobile number at booking. Without an OTP it is a string anyone can type, so knowing a number would be enough to read or cancel its tickets, which breaks owner-only access; with one it needs an SMS provider. (b) Give guests a refresh token. Keeps tickets on one browser only, and reverses the decision that a guest session is bounded. (c) Require an account at the moment of booking, in the page.
+
+**Choice** (c). Browsing and seat selection need no session. Book and Hold open the account dialog when signed out, keep the selection, and carry out the booking once the person has registered or signed in. The page no longer calls `POST /auth/guest` or `/auth/upgrade`.
+
+**Consequences** A ticket bought through the page is tied to an account and reachable from any device by signing in. No visitor creates a `users` row by loading the page. The API is unchanged: REQ-003 and REQ-004 still hold, and the burst and the seed script still book as guests. This does **not** close RISK-014 — registration costs no more than a guest did, so the per-user limit is still per free principal. An anonymous visitor's reads are now rate limited by address rather than by principal.

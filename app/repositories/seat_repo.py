@@ -137,7 +137,7 @@ async def release_for_reservation(conn: asyncpg.Connection, reservation_id: UUID
     """Return a reservation's seats, guarded on current ownership and on the claim
     still being active — confirmed, or a live hold. A seat that lapsed and was claimed
     by someone else carries their `reservation_id`, so it cannot match and a release
-    can never take a seat from its new owner (ADR-022, ADR-036)."""
+    can never take a seat from its new owner (ADR-022, ADR-040)."""
     with contention_is_a_decline():
         rows = await conn.fetch(
             f"""

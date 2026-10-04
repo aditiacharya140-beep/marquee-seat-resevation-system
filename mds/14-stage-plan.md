@@ -56,7 +56,7 @@ The effective-status expressions, defined once. `POST /shows` with all seats in 
 **Covers:** REQ-020 – REQ-029, REQ-060.
 
 ### Stage 5 — Lifecycle
-`confirm` and `cancel` as guarded updates, owner-only by `WHERE` clause; cancel works on a confirmed booking as well as a hold (ADR-036). Reservation reads with effective status. No sweeper (ADR-017).
+`confirm` and `cancel` as guarded updates, owner-only by `WHERE` clause; cancel works on a confirmed booking as well as a hold (ADR-040). Reservation reads with effective status. No sweeper (ADR-017).
 **Covers:** REQ-030 – REQ-036.
 
 ### Stage 6 — Observability

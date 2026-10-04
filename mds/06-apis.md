@@ -270,7 +270,7 @@ Only a `held` reservation is confirmable through this route; a reserve with no `
 
 **200** — the reservation, as below, with `"status": "cancelled"` and `cancelled_at`.
 
-Idempotent. Works on a **confirmed** reservation and on a live hold (ADR-036). Releases the seats to `available` and closes their claim rows; the seats are immediately re-bookable, and the owner's per-user allowance is freed. A repeat cancel is 200 and changes nothing, even if someone else has since booked the seats.
+Idempotent. Works on a **confirmed** reservation and on a live hold (ADR-040). Releases the seats to `available` and closes their claim rows; the seats are immediately re-bookable, and the owner's per-user allowance is freed. A repeat cancel is 200 and changes nothing, even if someone else has since booked the seats.
 
 `409 RESERVATION_EXPIRED` — the hold already lapsed, so its seats are already effectively available and there is nothing to release; reporting the real state beats a successful no-op
 `404 RESERVATION_NOT_FOUND` — including when owned by another principal, so reservation ids cannot be enumerated

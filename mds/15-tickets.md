@@ -4,7 +4,7 @@
 
 ## Status — 2026-10-04
 
-This board was written before the build and before several ADRs. It is kept as the record of how the work was decomposed. **It is not the authority on behaviour**: where a `Done when` line disagrees with an ADR, the ADR and the documents 02–13 are right. Known disagreements: SEAT-045 expects cancelling a confirmed reservation to be refused (ADR-036: it succeeds); SEAT-031 and SEAT-042 expect a stored decline to replay and the same key on another show to succeed (ADR-020 and ADR-021 say otherwise); SEAT-034 expects a body carrying `user_id` to be a 422 (ADR-028: ignored); SEAT-019 and SEAT-024 list indexes ADR-017 dropped; SEAT-033 expects a rolled-back T2 to leave the key `in_progress` (ADR-020: released).
+This board was written before the build and before several ADRs. It is kept as the record of how the work was decomposed. **It is not the authority on behaviour**: where a `Done when` line disagrees with an ADR, the ADR and the documents 02–13 are right. Known disagreements: SEAT-045 expects cancelling a confirmed reservation to be refused (ADR-040: it succeeds); SEAT-031 and SEAT-042 expect a stored decline to replay and the same key on another show to succeed (ADR-020 and ADR-021 say otherwise); SEAT-034 expects a body carrying `user_id` to be a 422 (ADR-028: ignored); SEAT-019 and SEAT-024 list indexes ADR-017 dropped; SEAT-033 expects a rolled-back T2 to leave the key `in_progress` (ADR-020: released).
 
 Judged by the board's own rule — every `Done when` check observably true — almost nothing below is closed, because most tickets name tests and static checks that were not written. Judged by whether the behaviour exists and is tested:
 

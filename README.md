@@ -116,6 +116,13 @@ curl -s $BASE/metrics | grep -E 'reservations_|seats_available'
 
 Interactive docs at `/docs`.
 
+Each burst leaves its show behind, and the API cannot delete one. To remove them and
+everything booked on them, straight from the database (asks before deleting):
+
+```bash
+.venv/bin/python scripts/delete_burst_shows.py "<DATABASE_URL>"   # omit for the local ./.env one
+```
+
 ## Semantics worth knowing
 
 - **A reserve confirms immediately.** Pass `hold_ttl_seconds` to hold instead; a hold
