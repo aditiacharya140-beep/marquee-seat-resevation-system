@@ -5,6 +5,11 @@ const REQUEST_TIMEOUT_MS = 10000;
 const MAX_THROTTLE_RETRIES = 2;
 const TOAST_MS = 6000;
 const SESSION_KEY = 'seatres.session';
+// Shows the load test (burst/burst.py) leaves behind are not part of the programme.
+const LOAD_TEST_PREFIX = 'burst-';
+const MAX_SHOW_PAGES = 10;
+const LONG_ROW = 26;
+const AISLE_MIN_ROW = 14;
 const SEAT_LABEL = /^([A-Za-z]+)[-\s]?(\d+)$/;
 const STATUS_TEXT = {
   held: 'Held', confirmed: 'Confirmed', cancelled: 'Cancelled', expired: 'Expired',
@@ -65,6 +70,20 @@ function listOf(labels) {
   return labels.length > 1
     ? `${labels.slice(0, -1).join(', ')} and ${labels.at(-1)}`
     : labels.join('');
+}
+
+// A show's name carries its showtime and screen after the title: "Title · when · where".
+function showParts(name) {
+  const [title, ...meta] = name.split(' · ');
+  return { title, meta };
+}
+
+function poster(name, size = '') {
+  const { title } = showParts(name);
+  let hue = 0;
+  for (const char of title) hue = (hue * 31 + char.codePointAt(0)) % 360;
+  const initials = title.split(/\s+/).slice(0, 2).map((word) => word[0] || '').join('').toUpperCase();
+  return h('span', { class: `poster ${size}`, style: `--hue: ${hue}`, 'aria-hidden': 'true' }, initials);
 }
 
 function newKey() {
@@ -263,11 +282,18 @@ async function signOut() {
 /* ---------- shows ---------- */
 
 async function loadShows(more = false) {
-  const query = more && state.showsCursor ? `?cursor=${encodeURIComponent(state.showsCursor)}` : '';
-  const page = await api('GET', `/shows${query}`);
-  state.shows = more ? state.shows.concat(page.items) : page.items;
-  state.showsCursor = page.next_cursor;
-  for (const show of page.items) showNames.set(show.show_id, show.name);
+  let cursor = more ? state.showsCursor : null;
+  const found = [];
+  // A page can be nothing but load-test shows, so read on until one has something to list.
+  for (let page = 0; page < MAX_SHOW_PAGES; page += 1) {
+    const data = await api('GET', `/shows${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`);
+    cursor = data.next_cursor;
+    for (const show of data.items) showNames.set(show.show_id, show.name);
+    found.push(...data.items.filter((show) => !show.name.startsWith(LOAD_TEST_PREFIX)));
+    if (found.length || !cursor) break;
+  }
+  state.shows = more ? state.shows.concat(found) : found;
+  state.showsCursor = cursor;
   renderShows();
 }
 
@@ -275,19 +301,22 @@ function renderShows() {
   const open = state.show && state.show.show_id;
   $('shows-empty').hidden = state.shows.length > 0;
   $('btn-more-shows').hidden = !state.showsCursor;
-  $('show-list').replaceChildren(...state.shows.map((show) => h('li', {},
-    h('button', {
-      class: `show-item${show.show_id === open ? ' active' : ''}`,
-      type: 'button',
-      'aria-current': show.show_id === open ? 'true' : null,
-      onclick: () => openShow(show.show_id).catch(fail),
-    },
-      h('span', {},
-        h('span', { class: 'name' }, show.name),
-        h('span', { class: 'muted small' },
-          `${show.event_kind} · ${show.total_seats} seats`
-          + (show.status === 'on_sale' ? '' : ` · ${STATUS_TEXT[show.status]}`))),
-      h('span', { class: 'price' }, money(show.price_paise, show.currency))))));
+  $('show-list').replaceChildren(...state.shows.map((show) => {
+    const { title, meta } = showParts(show.name);
+    return h('li', {},
+      h('button', {
+        class: `show-item${show.show_id === open ? ' active' : ''}`,
+        type: 'button',
+        'aria-current': show.show_id === open ? 'true' : null,
+        onclick: () => openShow(show.show_id).catch(fail),
+      },
+        poster(show.name),
+        h('span', { class: 'show-text' },
+          h('span', { class: 'name' }, title),
+          h('span', { class: 'muted small' }, meta.join(' · ') || `${show.total_seats} seats`),
+          h('span', { class: 'muted small' },
+            show.status === 'on_sale' ? money(show.price_paise, show.currency) : STATUS_TEXT[show.status]))));
+  }));
 }
 
 async function openShow(showId) {
@@ -350,28 +379,54 @@ function seatRows(seats) {
     const match = SEAT_LABEL.exec(seat.label);
     const row = match ? match[1].toUpperCase() : '';
     if (!rows.has(row)) rows.set(row, []);
-    rows.get(row).push({ label: seat.label, text: match ? match[2] : seat.label });
+    rows.get(row).push({ seat, number: match ? match[2] : seat.label });
   }
   return [...rows.entries()]
     // A…Z before AA, and labels with no row letter last.
     .sort(([a], [b]) => (!a) - (!b) || a.length - b.length || a.localeCompare(b))
-    .map(([row, items]) => [row, items.sort((a, b) => byLabel(a.label, b.label))]);
+    .map(([row, items]) => ({ row, items: items.sort((a, b) => byLabel(a.seat.label, b.seat.label)) }));
 }
 
 function buildMap(show) {
   seatEls.clear();
-  $('seat-map').replaceChildren(...seatRows(show.seats).map(([row, items]) => {
-    const buttons = items.map(({ label, text }) => {
-      const el = h('button', { type: 'button', onclick: () => toggleSeat(label) }, text);
-      seatEls.set(label, el);
+  const rows = seatRows(show.seats);
+  // A row whose seats share one section and price sits under a heading for that tier.
+  const tiers = rows.map(({ items }) => {
+    const { section, price_paise: price } = items[0].seat;
+    const uniform = items.every(({ seat }) => seat.section === section && seat.price_paise === price);
+    return uniform ? `${section || 'Standard'} · ${money(price, show.currency)}` : null;
+  });
+  const headed = new Set(tiers.filter(Boolean)).size > 1;
+  const children = [];
+  let marked = false;
+  rows.forEach(({ row, items }, index) => {
+    if (headed && tiers[index] && tiers[index] !== tiers[index - 1]) {
+      children.push(h('div', { class: 'tier-head' }, tiers[index]));
+    }
+    // A hall whose labels do not form short lettered rows is drawn as a wrapped grid.
+    const loose = !row || items.length > LONG_ROW;
+    const quarter = Math.round(items.length / 4);
+    const buttons = items.map(({ seat, number }, position) => {
+      const ownPrice = !tiers[index] && (seat.price_paise !== show.price_paise || Boolean(seat.section));
+      marked ||= ownPrice;
+      const el = h('button', {
+        type: 'button',
+        'data-tier': ownPrice,
+        'data-aisle': !loose && items.length >= AISLE_MIN_ROW
+          && (position === quarter || position === items.length - quarter),
+        onclick: () => toggleSeat(seat.label),
+      }, loose ? seat.label : number);
+      seatEls.set(seat.label, el);
       return el;
     });
-    return row
-      ? h('div', { class: 'seat-row' },
+    children.push(loose
+      ? h('div', { class: 'seat-row loose' }, ...buttons)
+      : h('div', { class: 'seat-row' },
         h('span', { class: 'row-label', 'aria-hidden': 'true' }, row), ...buttons,
-        h('span', { class: 'row-label', 'aria-hidden': 'true' }, row))
-      : h('div', { class: 'seat-row loose' }, ...buttons);
-  }));
+        h('span', { class: 'row-label', 'aria-hidden': 'true' }, row)));
+  });
+  $('legend-tier').hidden = !marked;
+  $('seat-map').replaceChildren(...children);
 }
 
 function paintSeats(show) {
@@ -392,8 +447,7 @@ function paintSeats(show) {
     } else if (selected) {
       kind = text = 'selected';
     }
-    const ownPrice = seat.price_paise !== show.price_paise || seat.section;
-    el.className = `seat ${kind}${ownPrice ? ' tier' : ''}`;
+    el.className = `seat ${kind}`;
     el.disabled = !onSale || (kind !== 'available' && kind !== 'selected');
     el.setAttribute('aria-pressed', String(selected));
     const description = [seat.label, seat.section, money(seat.price_paise, show.currency), text]
@@ -409,10 +463,16 @@ function renderShow() {
   $('show-view').hidden = !show;
   if (!show) return;
 
-  $('show-name').textContent = show.name;
-  $('show-meta').textContent = `${show.event_kind} · ${money(show.price_paise, show.currency)} per seat`
-    + (show.status === 'on_sale' ? '' : ` · ${STATUS_TEXT[show.status]}`);
-  $('screen').textContent = show.event_kind === 'cinema' ? 'Screen' : 'Stage';
+  const { title, meta } = showParts(show.name);
+  const cheapest = Math.min(...show.seats.map((seat) => seat.price_paise));
+  $('show-poster').replaceChildren(poster(show.name, 'large'));
+  $('show-name').textContent = title;
+  $('show-meta').replaceChildren(...[
+    ...meta,
+    `From ${money(cheapest, show.currency)}`,
+    show.status === 'on_sale' ? null : STATUS_TEXT[show.status],
+  ].filter(Boolean).map((text) => h('span', { class: 'chip' }, text)));
+  $('screen').textContent = show.event_kind === 'cinema' ? 'Screen this way' : 'Stage';
   const { available, held, confirmed, total } = show.counts;
   $('show-counts').replaceChildren(
     ...[['Available', available], ['Held', held], ['Sold', confirmed], ['Total', total]]
@@ -433,7 +493,8 @@ function renderSummary() {
   const prices = new Map(show.seats.map((seat) => [seat.label, seat.price_paise]));
   const total = labels.reduce((sum, label) => sum + prices.get(label), 0);
   $('selection-line').replaceChildren(...(labels.length
-    ? [`${labels.join(', ')} · `, h('strong', {}, money(total, show.currency))]
+    ? [`${labels.length} seat${labels.length > 1 ? 's' : ''} · ${labels.join(', ')} · `,
+      h('strong', {}, money(total, show.currency))]
     : ['Select seats on the map.']));
   const mine = show.seats.filter((seat) => seat.status !== 'available' && state.mine.has(seat.label)).length;
   $('limit-line').textContent = `Up to ${show.per_user_limit} seats per person`
@@ -543,13 +604,20 @@ function renderBookings() {
       type: 'button',
       onclick: (event) => settle(booking, verb, event.currentTarget),
     }, verb === 'confirm' ? 'Confirm' : 'Cancel');
-    return h('li', { class: 'booking' },
-      h('div', {},
+    const name = showNames.get(booking.show_id) || 'Show';
+    const { title, meta } = showParts(name);
+    const fact = (label, value) => h('div', {}, h('dt', {}, label), h('dd', {}, value));
+    return h('li', { class: `ticket ${booking.status}` },
+      poster(name),
+      h('div', { class: 'ticket-body' },
         h('button', { class: 'link', type: 'button', onclick: () => openShow(booking.show_id).catch(fail) },
-          showNames.get(booking.show_id) || 'Show'),
-        h('div', { class: 'muted small' },
-          `${booking.seats.join(', ')} · ${money(booking.amount_paise, booking.currency)}`)),
-      h('div', { class: 'booking-side' },
+          title),
+        meta.length > 0 && h('div', { class: 'muted small' }, meta.join(' · ')),
+        h('dl', { class: 'facts' },
+          fact('Seats', booking.seats.join(', ')),
+          fact('Amount', money(booking.amount_paise, booking.currency)),
+          fact('Booking ID', booking.reservation_id.slice(0, 8).toUpperCase()))),
+      h('div', { class: 'ticket-side' },
         held && h('span', { class: 'countdown', 'data-expires': booking.expires_at },
           countdown(Math.max(secondsLeft(booking), 0))),
         h('span', { class: `badge ${booking.status}` }, STATUS_TEXT[booking.status]),

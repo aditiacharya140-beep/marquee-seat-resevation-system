@@ -113,6 +113,20 @@ Nothing in the booking logic changes.
 - **The admin pattern is rows `A` to a chosen letter and a number of seats per row.** Per-seat prices and sections still need the API.
 - **The open show is kept in the URL fragment**, so a reload returns to it. Tokens are never in the URL.
 
+### Made to read as a cinema
+
+The service's default event kind is `cinema`, and the page is dressed for it. None of this needed an API change.
+
+- **A show's name carries its showtime and screen**: `Title · when · where`, split on ` · `. The title heads the page and the rest become chips. A name with no ` · ` is simply a title.
+- **Posters are generated**, a colour and initials from the title, because the API carries no artwork.
+- **Price tiers are headed on the map.** Consecutive rows whose seats share one section and price sit under a heading such as `Recliner · ₹450`. A seat is marked "own price" only in a row that is not uniform.
+- **Rows of 14 or more get two aisles**, a quarter of the way in from each side. This is drawing only; the labels are untouched.
+- **A hall that does not form short lettered rows is drawn as a wrapped grid** with full labels — a row of more than 26 seats, or labels with no row letter.
+- **Shows left behind by the load test are not listed.** `burst/burst.py` names its shows `burst-…`, and the page skips that prefix; they are still reachable by id. The API has no way to close or delete a show.
+- **Bookings are drawn as tickets**, with a short booking id taken from the reservation id.
+- **Messages appear at the top of the page**, so one never covers the Confirm button it is about.
+- **`scripts/seed_demo.py` fills a deployment with a programme**: six films in a three-tier hall, about a third of each sold through the real guest-and-reserve path. It skips a show whose name already exists.
+
 ## What it will not do
 
 - **No payment screen.** The API has no payment step, so the page cannot add one. "Book now" confirms outright.
