@@ -70,7 +70,7 @@ If the row count returned is less than the number of labels requested, the trans
 
 Two transactions for different principals never contend on step 1 and always agree on the order in step 2. Two transactions for the same principal serialize at step 1. No cycle is constructible, so no deadlock.
 
-`SKIP LOCKED` must **not** appear in the claim path — skipping a momentarily locked row would decline a seat that is still available. It is correct only in the sweeper, which may safely ignore rows another worker is already handling.
+`SKIP LOCKED` must **not** appear anywhere — skipping a momentarily locked row would decline a seat that is still available, and with no sweeper it has no legitimate use.
 
 `lock_timeout` is set per claiming transaction. A timeout is translated to a 409 with its own metric label, never a 500 and never an indefinite wait.
 
@@ -87,12 +87,11 @@ A violation of this index is an alert-worthy bug, not an expected decline. It is
 
 ## Expiry
 
-Expiry is enforced in two places and the two must agree:
+Expiry is **lazy, and that is all of it** (ADR-017): `(status = 'held' AND hold_expires_at <= now())` is an arm of the claim predicate, so a lapsed hold is claimable the instant it lapses. There is no sweeper, and nothing rewrites a lapsed hold's stored status.
 
-- **Lazily**, by the `(status = 'held' AND hold_expires_at <= now())` arm of the claim predicate, so an expired hold is claimable the instant it lapses with no worker involved.
-- **Eventually**, by the sweeper, which returns lapsed seats to `available` and marks their reservations `expired` so state reads stay honest.
+Every reader therefore derives **effective status** from the expressions in `app/db/sql.py` — defined once, used by the claim predicate, the per-user count, the seat map and the gauge. A second copy that drifts breaks invariant 3.
 
-The **effective status** expression — treating a lapsed hold as available — must be defined once and reused by the claim predicate, the sweeper, and the `GET /shows/{id}` counts query. Three copies that drift break invariant 3. One definition, imported everywhere.
+A reserve confirms outright unless the client passes `hold_ttl_seconds`. Because a lapsed hold's `reservation_seats` row is still active, the claim closes superseded rows (`close_superseded_claims`) **after** the seat claim and **before** the insert, as its own statement — never a CTE folded into the insert (LEARN-009).
 
 A release never resurrects a seat confirmed to someone else: cancel and sweep are themselves guarded updates predicated on the current owner and status.
 
@@ -109,9 +108,9 @@ The key row is the ownership token and the unique constraint `(user_id, key)` de
 - Insert `in_progress` in its own committed transaction. A unique violation means someone else owns the key.
 - Mark `completed` with the stored response **inside the same transaction as the reservation**, so result and key state commit atomically or not at all.
 - Fingerprint the canonical request body. A matching key with a different fingerprint is 409 `IDEMPOTENCY_KEY_REUSED` — checked before any seat work.
-- A completed key replays the stored status and body, flagged as a replay.
+- A completed key replays the stored body as **200** with `Idempotent-Replay: true`, never 201 (ADR-029).
 - An `in_progress` key is polled for a bounded interval, then declines 409 `IDEMPOTENCY_IN_PROGRESS`.
-- Domain declines are stored and replayed; they are part of exactly-once. An unexpected 5xx releases the key so a retry can genuinely re-attempt.
+- Only successes are stored (ADR-020). A decline or a fault rolls T2 back and releases the key, so a retry genuinely re-attempts.
 - A key stuck `in_progress` past a staleness window is reclaimable, or the crash of one worker would poison a key forever.
 
 ## What the tests must prove
@@ -132,3 +131,5 @@ A test that would still pass against a read-then-write implementation is not tes
 - `2026-10-03` — Initial invariants: guarded conditional update, ordered multi-seat CTE, deadlock-free lock order, shared effective-status expression, quota-row serialization, idempotency key lifecycle.
 - `2026-10-03` — Claim semantics verified against PostgreSQL 16.15 (LEARN-002). Rule added: the four probes above are the minimum regression set for any change to the claim predicate.
 - `2026-10-03` — Pool sizing is a correctness concern, not tuning (LEARN-003): local `max_connections` is 100 and the test suite draws from the same pool, so an oversized dev pool surfaces as connection errors that look like application defects. Size against the server ceiling.
+- `2026-10-04` — Brought into line with ADR-017/019/020/029, which the implementation follows: lazy-only expiry with no sweeper, superseded-row closure as a separate statement, only successes stored, replays answer 200. The skill had been teaching the superseded design.
+- `2026-10-04` — A migration path is verified only when the entrypoint has run it in the built image (LEARN-013); asyncpg session guards go in `server_settings`, not a `SET`, because the pool issues `RESET ALL` on release (LEARN-014).

@@ -803,3 +803,48 @@ Eleven categories were attacked and found clean, including secrets in the image 
 The Stage 0 suite was validated against 14 deliberate mutations, every one of which killed tests — and it still contained three assertions that proved nothing: a loop that iterated zero times because the formatter had already neutralised the values it scanned for, a test whose name promised stack redaction while its body raised an exception containing no secret, and no test at all coupling `.env.example` to `Settings` (two fields were deleted and the suite stayed green).
 
 **Implication** Mutation coverage proves the mutations were caught, not that every assertion has teeth. The gap is assertions whose *premise* is false — they never execute, or they assert something adjacent to the property named. Two checks worth running on any suite that matters: confirm each assertion actually executes (a loop over a filtered collection can be empty), and confirm the test's name matches what its body asserts. Both found defects here that mutation testing structurally could not.
+
+## ADR-032 — Deadline scope: build the claim path, cut what does not touch it
+
+**Date** 2026-10-04
+
+**Context** The design was complete and nothing behind `POST /shows/{id}/reserve` existed, with the deadline the same day.
+
+**Choice** Build register/login/guest, show create and read, reserve, confirm, cancel, a reservation read, `/readyz` and `/metrics`. **Not built:** the audit table and writer, rate limiting, `/auth/upgrade`, `/auth/refresh`, `GET /shows`, `GET /reservations`, sale windows, `seat_overrides`, and the HTTP/pool/lock-wait histograms. `ACCESS_TOKEN_TTL_SECONDS` defaults to a day because there is no refresh flow. The schema is one Alembic revision without `audit_log`.
+
+**Consequences** REQ-046 (audit) and the rate-limit requirements are unmet and say so in the write-up. `RATE_LIMIT_*` and `AUDIT_*` settings remain declared and have no reader. Three deliberate departures from the documents, each smaller than what they replace: `idempotency_repo` functions take a connection (the service passes one that is not in a transaction, which is the property the no-connection signature existed to enforce); `GET /shows/{id}` derives its counts from the same statement that returns the seat rows rather than from a second counts query, which is strictly stronger; and `reservations_confirmed_total` counts every reservation that reaches `confirmed`, with `reservations_held_total` beside it, in place of `reservations_created_total{show_id,kind}` — REQ-042 names "reservations confirmed", and `show_id` is not a bounded label.
+
+## LEARN-013 — The `alembic` console script does not put the working directory on `sys.path`
+
+**Date** 2026-10-04
+
+`python -m alembic` does, so `env.py` importing `app.core.config` worked on every local run and failed with `ModuleNotFoundError: No module named 'app'` the first time the real image booted. Fixed with `prepend_sys_path` in `app/alembic.ini`.
+
+**Implication** Found only by running `docker compose up`, not by any test. A migration path is verified when the entrypoint has run it in the image, and not before.
+
+## LEARN-014 — asyncpg's pool issues `RESET ALL` on release
+
+**Date** 2026-10-04
+
+A `SET statement_timeout` in a pool `init` hook would be reverted the first time the connection was returned. The guards are passed as `server_settings` — startup parameters — which are what `RESET ALL` resets *to*. `test_session_guards_are_applied_and_survive_release` covers it.
+
+## LEARN-015 — `jsonb` does not preserve key order
+
+**Date** 2026-10-04
+
+A replayed response is the stored `jsonb` body, so it is equal to the original as JSON and not byte-for-byte. A test comparing response text failed on a correct replay. Clients comparing replays must compare parsed bodies.
+
+## RISK-009, RISK-010, RISK-011 — closed
+
+**Date** 2026-10-04
+
+- **RISK-009** `_redact` now normalises pydantic models and dataclasses before filtering keys.
+- **RISK-010** Log records are rendered on the calling thread and written by a `QueueListener` thread through a bounded queue that drops when full (`LOG_QUEUE_MAX`).
+- **RISK-011** `alembic.ini` lives in `app/`, the entrypoint runs the migration unconditionally and fails the boot if it fails, and the compose stack and the CI container job both exercise it against a real database.
+
+## RISK-013 — CI and compose secrets were below the validated minimum
+
+**Date** 2026-10-04
+
+`JWT_SECRET` in `docker-compose.yml` and `.github/workflows/ci.yml` was shorter than the 32 characters `Settings` requires, so neither would have booted. Fixed. CI has still never run on a real runner; the first push is the test.
+

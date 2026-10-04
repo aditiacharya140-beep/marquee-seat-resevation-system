@@ -1,0 +1,216 @@
+# Write-up
+
+## The problem, and the one decision that solves it
+
+Two requests read a seat as available; both write; the seat has two owners. No amount
+of checking in the application closes that gap, and wrapping the read and the write in
+a `READ COMMITTED` transaction does not either — the second write simply overwrites
+the first.
+
+The fix is to make the decision and the effect **one statement**. A seat is one row,
+and the claim is a conditional update of that row
+([app/repositories/seat_repo.py](app/repositories/seat_repo.py)):
+
+```sql
+WITH candidate AS (
+    SELECT id, label, COALESCE(price_paise, $show_price) AS price_paise
+      FROM seats
+     WHERE show_id = $show AND label = ANY($labels)
+       AND (status = 'available' OR (status = 'held' AND hold_expires_at <= now()))
+     ORDER BY label
+       FOR UPDATE
+)
+UPDATE seats s SET status = ..., held_by = $user, reservation_id = $reservation, ...
+  FROM candidate c WHERE s.id = c.id
+RETURNING s.id, s.label, c.price_paise;
+```
+
+**The number of rows returned is the decision.** All of them: this transaction owns
+the seats. Fewer: someone else holds one, the transaction rolls back, and the caller
+gets `409 SEAT_TAKEN` naming the conflicts.
+
+### Why it is race-free
+
+Under `READ COMMITTED`, when B's statement reaches a row A has updated but not yet
+committed, B blocks on A's row lock. When A commits, PostgreSQL does not let B proceed
+with the row version it first saw: it re-reads the committed row and **re-evaluates
+the `WHERE` clause against it**. A's commit made the seat `confirmed`, B's predicate
+is now false, the row drops out, and B's row count comes up short.
+
+So there is no instant between check and write (they are the same statement under the
+same lock), no lost update (the loser's predicate no longer matches), and exactly one
+winner (the lock admits contenders one at a time and the predicate is true for the
+first only). If A rolls back instead, B's re-check sees `available` and B wins — a
+rolled-back claim never happened.
+
+A loser is a **zero-row result, not an exception**. That is what makes "no 5xx for a
+domain outcome" a property of the mechanism rather than of error handling. This was
+probed directly against PostgreSQL before any application code existed, and is
+re-proven on every test run.
+
+A partial unique index, `uq_seat_active_claim ON reservation_seats (seat_id) WHERE
+released_at IS NULL`, is the backstop: a second live claim on one seat is physically
+unrepresentable even if the predicate were ever wrong. If it fires, the client still
+gets a `409`, and the log line is an alert.
+
+All-or-nothing is a property of the transaction, not of cleanup code. There is no
+compensating release to get wrong.
+
+## Deadlock avoidance
+
+Every claiming transaction takes locks in one fixed order:
+
+1. its own principal's quota row,
+2. seat rows in **ascending label order**.
+
+`ORDER BY label` under `FOR UPDATE` is not a sort for presentation — it is the
+deadlock prevention. Two buyers asking for `[A1, A2]` and `[A2, A1]` both lock A1
+first, so neither can hold what the other is waiting for; no cycle is constructible.
+Different principals never contend at step 1; the same principal serializes there.
+Cancel and confirm lock their own reservation row first, then seats in the same order.
+
+`lock_timeout` (2s) bounds the wait and is translated to `409`; it is configured
+strictly below `statement_timeout`, validated at boot, so contention can never surface
+as a statement cancellation. `SKIP LOCKED` and `NOWAIT` are deliberately absent: both
+would decline a seat that is merely momentarily locked by a transaction about to roll
+back.
+
+## Per-user limit
+
+Count-then-insert loses the same race the double-sell does. So a claim first locks the
+principal's `(user, show)` quota row — serializing only *that user's* concurrent
+requests — then counts what they hold. The count is **derived from the seats**, never
+stored: a stored tally must be decremented on every cancel and every lapse, and each
+is a chance to drift. The quota row is a lock target, not a counter.
+
+## Idempotency
+
+The key row is an ownership token; `UNIQUE (user_id, key)` decides who owns it.
+
+- **T1** inserts the key as `in_progress` and commits at once — ownership must be
+  visible to a concurrent duplicate *immediately*, or the key protects nothing during
+  exactly the window it exists for.
+- **T2** is the claim, and it marks the key `completed` with the response body
+  **inside the same transaction as the reservation**. A third transaction would let a
+  crash leave a committed reservation whose key says `in_progress` forever.
+- A duplicate that loses T1 reads the row: a different fingerprint is
+  `409 IDEMPOTENCY_KEY_REUSED`; a completed row is replayed; an in-progress row is
+  polled for a bounded time, **releasing its connection between polls** — holding it
+  would let a few hundred retries exhaust the pool.
+- The fingerprint covers the operation, the show id *from the path*, the sorted labels
+  and the TTL, so a key cannot be replayed against another show.
+- **A replay is `200`, never `201`**, so retries cannot be miscounted as creations.
+- **Only successes are stored.** A decline rolls T2 back and releases the key: a
+  stored "taken" is a lie with a shelf life, and a retry should be a real attempt.
+- A key stuck `in_progress` past a staleness window (its owner died) is reclaimable by
+  one guarded `UPDATE`, so a crash cannot poison a key.
+
+## Holds and expiry
+
+A reserve confirms outright by default; a hold is opt-in via `hold_ttl_seconds`. That
+keeps the path load actually exercises free of any expiry edge.
+
+Expiry is **lazy, and that is all of it**: `status = 'held' AND hold_expires_at <=
+now()` is an arm of the claim predicate, so a lapsed hold is claimable the instant it
+lapses. There is no sweeper — its only job would be making stored state match
+reality, and every reader derives effective status instead, from expressions defined
+exactly once ([app/db/sql.py](app/db/sql.py)) and shared by the claim, the limit
+count, the seat map and the gauge. A second writer of seat state, with its own lock
+story, next to the one path that must not be wrong, was not worth having.
+
+Two PostgreSQL facts shaped this. A partial index predicate must be `IMMUTABLE`, so
+the backstop index cannot say "active *and unexpired*" — a lapsed hold's claim row
+would collide with the legitimate next claim. So the claim closes superseded rows
+first, as a **separate statement**: folded into the insert as a CTE, the two would
+share one snapshot with no defined order. And `now()` is transaction-stable, so a hold
+cannot be lapsed for one statement and live for the next.
+
+## Reconciliation
+
+`available + held + confirmed == total` holds structurally, not by enforcement: seat
+rows are created once with the show and never added or removed; status is one
+`CHECK`-constrained column; a coherence constraint makes a half-written transition
+unrepresentable; and counts are derived from a single statement's snapshot. The burst
+samples this *during* the stampede, not only after.
+
+## Consistency under partition: CP
+
+PostgreSQL is the only authority for seat state, and nothing in the claim path holds
+in-process state — N instances behave like one. If the service cannot reach the
+database it does not sell: `/readyz` fails closed and requests get `503
+DATABASE_UNAVAILABLE`. It never answers from a cache and never queues a claim to apply
+later. An unavailable box office is recoverable; a double-sold seat is not. The
+ambiguous case — a client that times out without learning the outcome — is what the
+idempotency key resolves: the retry returns the original reservation or makes the one
+real attempt.
+
+## What would page at 2am
+
+| Signal | Why |
+|---|---|
+| `unhandled_exceptions_total` > 0, or any 5xx on reserve | A decline surfaced as a fault. Violates a hard requirement |
+| `claim_backstop_violated` in the logs | The unique index caught a second live claim: the predicate has a bug |
+| `/readyz` failing | Database unreachable; nothing can be sold |
+| `claim_deadlock` in the logs | The lock order was broken by a change |
+| `reservations_declined_total{reason="lock_timeout"}` climbing | Hot-seat queues are exceeding the lock timeout |
+
+Deliberately **not** paging: a high rate of `seat_taken`, `per_user_limit` or
+`idempotent_replay`. That is the service working during an on-sale, and an alert that
+fires whenever the product succeeds gets muted.
+
+## Evidence
+
+- `tests/concurrency/` — one test per invariant against real PostgreSQL: hot seat (60
+  contenders → one `201`, 59 × `409`, zero unhandled), per-user limit, one key fired
+  20× concurrently, opposite-order multi-seat claims, reconciliation sampled
+  mid-burst, lapsed-hold re-claim. Replacing the claim predicate with `true` fails
+  four of the six, so they are testing the mechanism and not the happy path.
+- Local burst, one uvicorn worker, pool of 20: 3,530 reserve requests in 8.5s with 500
+  in flight — 710 created, 2,795 `SEAT_TAKEN`, 19 replays, 6 `PER_USER_LIMIT`, **zero
+  5xx**, hot seat 1 winner of 500, every reconciliation check green. Latency at that
+  depth is pool queueing (p95 ≈ 6.6s), not lock contention: the pool is sized to the
+  database's connection ceiling, and requests wait rather than fail.
+
+## What was cut, honestly
+
+The design ([mds/](mds/00-overview.md)) covers more than was built. Not built: the
+audit table and its writer (structured logs carry `request_id`, and every row is
+stamped with it), rate limiting, guest upgrade, refresh tokens (access tokens last a
+day instead), the show and reservation list endpoints, sale windows, per-seat price
+overrides, and the latency/pool/lock-wait histograms. Unmatched routes still return
+the framework's default 404 shape rather than the service's envelope. None of these
+touch the claim path.
+
+## AI usage
+
+Built with Claude Code. The full, contemporaneous record — including where the AI was
+wrong — is [mds/16-decision-highlights.md](mds/16-decision-highlights.md).
+
+**What the AI did.** Drafted the design documents and the correctness argument, wrote
+the code and tests, and ran the failure cases. Several defects were found only by
+executing rather than inspecting: secrets printed on a boot failure, a harness that
+deadlocked on a barrier wider than its pool, and — in the final build — a migration
+that ran locally and failed inside the container image.
+
+**What was directed, and where direction changed the design.** The decisions that
+shaped the service were made by pushing back on the AI's recommendations, not by
+accepting them:
+
+- *"Reason with me and then perform"* stopped a delegation mid-flight and produced a
+  better design than the one already recommended: lazy expiry with **no sweeper**.
+- *"Should we keep holds as well?"* turned a binary into the shipped model: confirm by
+  default, holds opt-in.
+- *"Never over-engineer"* cut an `events` table and seat-coordinate columns no
+  requirement drove; *"we should not under-deliver"* stopped an external review's
+  cuts from going too far.
+
+**Where it cost time.** A multi-agent workflow produced a rigorous design slowly, and
+the implementation was compressed into a final direct pass as a result. The design
+work is why that pass was possible; the lesson is that the proof of this service is
+one SQL statement and its tests, and those should have existed on day one.
+
+**How it was verified rather than trusted.** The correctness argument was written down
+so it could be checked against the SQL it claimed to prove — which is how four design
+defects were found. The mechanism was probed against real PostgreSQL before any
+application code, and the race tests are run against a deliberately broken variant to
+confirm they fail.

@@ -87,6 +87,13 @@ The same pass found that `unhandled_exceptions_total` — the direct measurement
 | A ticket's acceptance check was unsatisfiable | It required the error registry to equal the API contract's codes, but three operational codes are mandated elsewhere and appear in no contract table |
 | `BaseHTTPMiddleware` would have broken the access log | It runs the application in a separate task, so an outcome code set inside the app is invisible to the middleware wrapping it. Pure ASGI middleware instead — an improvement on the specification, not a deviation from it |
 
+### By running the built image, in the final build
+
+| Defect | Nature |
+|---|---|
+| Migrations ran locally and failed in the container | `python -m alembic` puts the working directory on `sys.path`; the `alembic` console script the entrypoint uses does not. Every local run and every test passed. Found by `docker compose up`, minutes after "the migration works" (LEARN-013) |
+| Compose and CI could not boot | Their `JWT_SECRET` values were shorter than the minimum the settings validate. Found by reading them against the config, before either was run (RISK-013) |
+
 ### In the test harness, not the service
 
 A concurrency probe hung indefinitely. The cause was entirely in the harness: fifty tasks each acquired a pooled connection *and then* waited on a fifty-wide barrier, against a pool of thirty. Thirty held connections waiting for twenty that could never obtain one.
