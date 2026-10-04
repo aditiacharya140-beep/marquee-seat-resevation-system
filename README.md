@@ -4,7 +4,7 @@ Assigned-seat booking for ticketed events. One seat, one buyer, under any amount
 contention: N simultaneous requests for the same seat produce exactly one `201` and
 N−1 clean `409`s — never a double-sell, never a `5xx`.
 
-**Live:** `<LIVE_URL>` · **How it works and why it is race-free:** [WRITEUP.md](WRITEUP.md)
+**Live:** <https://seat-reservation-vw5k.onrender.com> ([/docs](https://seat-reservation-vw5k.onrender.com/docs) · [/readyz](https://seat-reservation-vw5k.onrender.com/readyz) · [/metrics](https://seat-reservation-vw5k.onrender.com/metrics)) · **How it works and why it is race-free:** [WRITEUP.md](WRITEUP.md)
 
 FastAPI · asyncpg · PostgreSQL 16 · Alembic · Prometheus · Docker.
 
