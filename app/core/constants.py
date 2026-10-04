@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Final
 
 SERVICE_NAME: Final = "seat-reservation"
+#: What people see. `SERVICE_NAME` stays as it is: it is the token issuer and the
+#: `service` field of every log line, and changing it would invalidate live tokens.
+APP_DISPLAY_NAME: Final = "Marquee"
 
 
 class SeatStatus(StrEnum):

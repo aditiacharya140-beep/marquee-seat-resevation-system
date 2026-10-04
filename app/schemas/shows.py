@@ -85,6 +85,9 @@ class SeatResponse(BaseModel):
 
 
 class ShowResponse(BaseModel):
+    #: The brief's name for it. `show_id` is the same value, kept because it is what a
+    #: reservation calls it and what every other response here uses.
+    id: UUID
     show_id: UUID
     name: str
     event_kind: str
@@ -103,6 +106,7 @@ class ShowResponse(BaseModel):
         show, seats = detail.show, detail.seats
         tally = Counter(seat.status for seat in seats)
         return cls(
+            id=show.id,
             show_id=show.id,
             name=show.name,
             event_kind=show.event_kind,

@@ -56,7 +56,9 @@ class Settings(BaseSettings):
 
     db_pool_min: int = 5
     db_pool_max: int = 20
-    db_acquire_timeout_seconds: int = 10
+    #: Long on purpose. A request that outwaits this gets a 503, and under a burst far
+    #: larger than the pool, waiting is the correct outcome and a 503 is not.
+    db_acquire_timeout_seconds: int = 60
     db_statement_timeout_ms: int = 5000
     db_lock_timeout_ms: int = 2000
     db_timeout_margin_ms: int = 1000
@@ -82,7 +84,7 @@ class Settings(BaseSettings):
     default_per_user_limit: int = 4
     default_hold_ttl_seconds: int = 120
     max_hold_ttl_seconds: int = 900
-    max_seats_per_show: int = 5000
+    max_seats_per_show: int = 50000
     max_seat_label_length: int = 16
     page_size_default: int = 20
     page_size_max: int = 100

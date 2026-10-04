@@ -13,6 +13,7 @@ from starlette.staticfiles import StaticFiles
 from app.api.routes import api_router
 from app.core.config import settings
 from app.core.constants import (
+    APP_DISPLAY_NAME,
     SCOPE_REQUEST_ID,
     STATIC_DIR,
     STATIC_URL_PREFIX,
@@ -147,7 +148,7 @@ def create_app() -> FastAPI:
     configure_logging()
 
     app = FastAPI(
-        title="Seat Reservation Service",
+        title=APP_DISPLAY_NAME,
         version=settings.service_version,
         lifespan=lifespan,
     )

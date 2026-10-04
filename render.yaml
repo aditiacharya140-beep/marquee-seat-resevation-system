@@ -29,11 +29,19 @@ services:
           property: connectionString
       - key: JWT_SECRET
         generateValue: true
-      # Entered in the dashboard, never committed. ADMIN_PASSWORD needs 12+ characters.
+      # The demo's admin sign-in, published in the README on purpose so a reviewer can
+      # create a show and open the admin console. A real deployment sets these as
+      # secrets instead (`sync: false`). The password is re-applied at every start.
       - key: ADMIN_EMAIL
-        sync: false
+        value: admin@example.com
       - key: ADMIN_PASSWORD
-        sync: false
+        value: seat-admin-2026
+      # Demo configuration: no rate limiting, so a load test from one machine sees 201
+      # and 409 and never 429; hour-long tokens, so a long run keeps its tokens.
+      - key: RATE_LIMIT_ENABLED
+        value: "false"
+      - key: ACCESS_TOKEN_TTL_SECONDS
+        value: "3600"
       - key: ALLOWED_EVENT_KINDS
         value: cinema,concert
       - key: DEFAULT_EVENT_KIND
@@ -44,9 +52,8 @@ services:
       # pool larger than the server can serve turns queueing into refusals.
       - key: DB_POOL_MAX
         value: "20"
-      # Guest issuance per client address: the control that bounds how many principals
-      # one client can mint. Same sustained rate as the 60/60s default (one a second),
-      # with a deeper bucket so `burst.sh` can mint its principals from one address.
+      # Used only if limiting is switched on. Guest issuance per client address: same
+      # sustained rate as the 60/60s default, with a deeper bucket for `burst.sh`.
       - key: RATE_LIMIT_GUEST
         value: 600/600s
       # Proxies in front of the service: the client address is read this many entries
