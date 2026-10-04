@@ -38,6 +38,8 @@ let clockOffsetMs = 0;
 let recovering = null;
 let polling = false;
 let authMode = 'signin';
+// The booking a signed-out person asked for, carried out once they have an account.
+let pendingBooking = null;
 
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -85,6 +87,8 @@ function poster(name, size = '') {
   const initials = title.split(/\s+/).slice(0, 2).map((word) => word[0] || '').join('').toUpperCase();
   return h('span', { class: `poster ${size}`, style: `--hue: ${hue}`, 'aria-hidden': 'true' }, initials);
 }
+
+const isLoadTest = (name) => Boolean(name) && name.startsWith(LOAD_TEST_PREFIX);
 
 function newKey() {
   if (crypto.randomUUID) return crypto.randomUUID();
@@ -176,6 +180,14 @@ async function api(method, path, { body, headers = {}, auth = true, quiet = fals
 /* ---------- session ---------- */
 
 function setSession(session) {
+  // Another person's bookings must not stay on screen, even if reloading them fails.
+  if (!session || !state.session || session.user_id !== state.session.user_id) {
+    state.bookings = [];
+    state.bookingsCursor = null;
+    state.mine = new Set();
+    renderBookings();
+    if (state.show) renderShow();
+  }
   state.session = session;
   try {
     if (session) sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
@@ -186,33 +198,32 @@ function setSession(session) {
 
 function restoreSession() {
   try {
-    return JSON.parse(sessionStorage.getItem(SESSION_KEY));
+    const session = JSON.parse(sessionStorage.getItem(SESSION_KEY));
+    // Booking needs an account, so a guest session has nothing to restore.
+    return session && !session.is_guest ? session : null;
   } catch {
     return null;
   }
 }
 
-async function startGuest() {
-  setSession(await api('POST', '/auth/guest', { auth: false }));
-}
-
 // Concurrent requests that all met a 401 share one recovery.
 function recoverSession(staleToken) {
-  if (!state.session || state.session.access_token !== staleToken) return Promise.resolve(true);
+  if (!state.session || state.session.access_token !== staleToken) {
+    return Promise.resolve(Boolean(state.session));
+  }
   recovering ??= (async () => {
     try {
-      const refreshToken = state.session.refresh_token;
-      if (refreshToken) {
-        try {
-          const fresh = await api('POST', '/auth/refresh', { auth: false, body: { refresh_token: refreshToken } });
-          setSession({ ...state.session, access_token: fresh.access_token });
-          return true;
-        } catch { /* fall through to a guest session */ }
-      }
-      await startGuest();
-      toast('Your session expired, so you are continuing as a new guest.');
+      const fresh = await api('POST', '/auth/refresh', {
+        auth: false, body: { refresh_token: state.session.refresh_token },
+      });
+      setSession({ ...state.session, access_token: fresh.access_token });
       return true;
-    } catch {
+    } catch (error) {
+      // Only a refused refresh ends the session; a network failure leaves it to retry.
+      if (error instanceof ApiError && error.code === 'UNAUTHENTICATED') {
+        setSession(null);
+        toast('Your session expired. Sign in again to see your tickets.');
+      }
       return false;
     } finally {
       recovering = null;
@@ -223,16 +234,16 @@ function recoverSession(staleToken) {
 
 function renderAccount() {
   const session = state.session;
-  const signedIn = Boolean(session && !session.is_guest);
-  $('who').textContent = signedIn ? session.email : 'Guest';
-  $('btn-signin').hidden = signedIn;
-  $('btn-register').hidden = signedIn;
-  $('btn-signout').hidden = !signedIn;
+  $('who').textContent = session ? session.email : '';
+  $('btn-signin').hidden = Boolean(session);
+  $('btn-register').hidden = Boolean(session);
+  $('btn-signout').hidden = !session;
   $('admin-panel').hidden = !(session && session.role === 'admin');
+  $('bookings-empty').textContent = session ? 'Nothing booked yet.' : 'Sign in to see your tickets.';
 }
 
-async function sessionChanged() {
-  state.selected.clear();
+async function sessionChanged(keepSelection = false) {
+  if (!keepSelection) state.selected.clear();
   state.attempt = null;
   await Promise.all([loadBookings(), loadMine()]);
   renderShow();
@@ -243,27 +254,29 @@ function openAuth(mode) {
   const registering = mode === 'register';
   $('auth-title').textContent = registering ? 'Create account' : 'Sign in';
   $('auth-submit').textContent = registering ? 'Register' : 'Sign in';
-  $('auth-note').textContent = registering
-    ? 'Bookings you made as a guest stay with your new account.'
-    : 'Signing in switches to that account\'s bookings.';
+  $('auth-switch').textContent = registering ? 'Already have an account? Sign in' : 'New here? Create an account';
+  $('auth-note').textContent = pendingBooking
+    ? 'An account is needed to book, so your tickets stay yours on any device. Your selection is kept while you do this.'
+    : 'Your tickets are kept with your account, on any device.';
   $('auth-form').elements.password.autocomplete = registering ? 'new-password' : 'current-password';
   $('auth-error').hidden = true;
-  $('auth-dialog').showModal();
+  if (!$('auth-dialog').open) $('auth-dialog').showModal();
 }
 
 async function submitAuth(event) {
   event.preventDefault();
   const form = $('auth-form');
   const body = { email: form.elements.email.value.trim(), password: form.elements.password.value };
-  const upgrading = authMode === 'register' && state.session && state.session.is_guest;
-  const path = authMode === 'signin' ? '/auth/login' : upgrading ? '/auth/upgrade' : '/auth/register';
   $('auth-submit').disabled = true;
   try {
-    setSession(await api('POST', path, { body, auth: upgrading }));
+    setSession(await api('POST', authMode === 'signin' ? '/auth/login' : '/auth/register', { body, auth: false }));
+    // Closing the dialog drops a pending booking, so it is taken first.
+    const resume = pendingBooking;
     form.reset();
     $('auth-dialog').close();
     toast(authMode === 'signin' ? 'Signed in.' : 'Account created.', 'ok');
-    await sessionChanged();
+    await sessionChanged(Boolean(resume));
+    if (resume) await reserve(resume.hold);
   } catch (error) {
     if (!(error instanceof ApiError)) throw error;
     $('auth-error').textContent = explain(error) + (error.requestId ? ` (request ${error.requestId})` : '');
@@ -275,7 +288,6 @@ async function submitAuth(event) {
 
 async function signOut() {
   setSession(null);
-  await startGuest().catch(fail);
   await sessionChanged();
 }
 
@@ -289,7 +301,7 @@ async function loadShows(more = false) {
     const data = await api('GET', `/shows${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`);
     cursor = data.next_cursor;
     for (const show of data.items) showNames.set(show.show_id, show.name);
-    found.push(...data.items.filter((show) => !show.name.startsWith(LOAD_TEST_PREFIX)));
+    found.push(...data.items.filter((show) => !isLoadTest(show.name)));
     if (found.length || !cursor) break;
   }
   state.shows = more ? state.shows.concat(found) : found;
@@ -525,6 +537,11 @@ async function reserve(hold) {
   const show = state.show;
   const seats = [...state.selected].sort(byLabel);
   if (!seats.length || state.busy) return;
+  if (!state.session) {
+    pendingBooking = { hold };
+    openAuth('register');
+    return;
+  }
   const signature = [show.show_id, hold ? 'hold' : 'book', ...seats].join('|');
   if (!state.attempt || state.attempt.signature !== signature) {
     state.attempt = { signature, key: newKey() };
@@ -532,7 +549,6 @@ async function reserve(hold) {
   state.busy = true;
   renderSummary();
   try {
-    if (!state.session) await startGuest();
     const reservation = await api('POST', `/shows/${show.show_id}/reserve`, {
       body: hold ? { seats, hold_ttl_seconds: show.hold_ttl_seconds } : { seats },
       headers: { 'Idempotency-Key': state.attempt.key },
@@ -550,6 +566,9 @@ async function reserve(hold) {
       toast(conflicts.length
         ? `${listOf(conflicts)} ${conflicts.length > 1 ? 'were' : 'was'} just taken. Nothing was booked.`
         : 'Those seats are busy right now. Try again.', 'info', error.requestId);
+    } else if (error.code === 'UNAUTHENTICATED') {
+      pendingBooking = { hold };
+      openAuth('signin');
     } else if (error.code === 'NETWORK') {
       // The key is kept, so pressing again replays this attempt instead of booking twice.
       toast('No answer from the service. Your selection is kept, and pressing again is safe: it cannot book twice.', 'error');
@@ -578,14 +597,12 @@ async function loadBookings(more = false) {
   }
   state.bookings = more ? state.bookings.concat(page.items) : page.items;
   state.bookingsCursor = page.next_cursor;
-  renderBookings();
+  // Names first: a booking is drawn, or left out, by the show it is for.
   const unnamed = [...new Set(page.items.map((item) => item.show_id))].filter((id) => !showNames.has(id));
-  if (unnamed.length) {
-    await Promise.all(unnamed.map((id) => api('GET', `/shows/${id}`, { quiet: true })
-      .then((show) => showNames.set(id, show.name))
-      .catch(() => {})));
-    renderBookings();
-  }
+  await Promise.all(unnamed.map((id) => api('GET', `/shows/${id}`, { quiet: true })
+    .then((show) => showNames.set(id, show.name))
+    .catch(() => {})));
+  renderBookings();
 }
 
 const secondsLeft = (booking) => Math.ceil((Date.parse(booking.expires_at) - now()) / 1000);
@@ -595,9 +612,11 @@ function countdown(seconds) {
 }
 
 function renderBookings() {
-  $('bookings-empty').hidden = state.bookings.length > 0;
+  // Bookings on a load-test show are no more part of the programme than the show is.
+  const bookings = state.bookings.filter((booking) => !isLoadTest(showNames.get(booking.show_id)));
+  $('bookings-empty').hidden = bookings.length > 0;
   $('btn-more-bookings').hidden = !state.bookingsCursor;
-  $('booking-list').replaceChildren(...state.bookings.map((booking) => {
+  $('booking-list').replaceChildren(...bookings.map((booking) => {
     const held = booking.status === 'held';
     const act = (verb) => h('button', {
       class: `btn small${verb === 'confirm' ? ' primary' : ''}`,
@@ -711,6 +730,8 @@ async function init() {
   $('btn-register').addEventListener('click', () => openAuth('register'));
   $('btn-signout').addEventListener('click', () => signOut());
   $('auth-cancel').addEventListener('click', () => $('auth-dialog').close());
+  $('auth-switch').addEventListener('click', () => openAuth(authMode === 'signin' ? 'register' : 'signin'));
+  $('auth-dialog').addEventListener('close', () => { pendingBooking = null; });
   $('auth-form').addEventListener('submit', submitAuth);
   $('btn-more-shows').addEventListener('click', () => loadShows(true).catch(fail));
   $('btn-more-bookings').addEventListener('click', () => loadBookings(true));
@@ -721,7 +742,6 @@ async function init() {
   renderAdminPreview();
 
   setSession(restoreSession());
-  if (!state.session) await startGuest().catch(fail);
 
   await loadShows().catch(fail);
   const wanted = location.hash.slice(1) || (state.shows[0] && state.shows[0].show_id);

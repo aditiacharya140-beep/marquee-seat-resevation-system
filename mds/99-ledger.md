@@ -966,3 +966,15 @@ Completes LEARN-018, by test against the live service from one machine:
 **Choice** `app/static/` holds `index.html`, `app.css` and `app.js`; `GET /` returns the page and `/static/*` its assets. No framework, no build step. Both paths are exempt from rate limiting, so loading the page spends none of the visitor's `read` allowance. A missing asset answers `ROUTE_NOT_FOUND` in the envelope (ADR-023 still holds). The plan and what was built are in `18-frontend.md`.
 
 **Consequences** One URL and one deployment; the image changes by three files. The page adds nothing to the booking logic and uses only existing endpoints. It polls `GET /shows/{id}` every four seconds per open tab, which is `read` traffic keyed by principal. Guest issuance and sign-in are limited per client address, so the page depends on `RATE_LIMIT_TRUSTED_PROXY_HOPS` being right on Render; it is, as of LEARN-019.
+
+## ADR-037 — The web page requires an account to book; the API still accepts guests
+
+**Date** 2026-10-05
+
+**Context** The page gave every visitor a guest session and let it book. A guest is identified only by its token: one hour, no refresh token (`05-auth-and-rbac.md`), kept in the tab's session storage. So a guest's confirmed ticket became unreachable when the tab closed or the hour passed. The seat stayed sold; no one could see, show or cancel the ticket. Found by the user, using the live page.
+
+**Options** (a) Ask for a mobile number at booking. Without an OTP it is a string anyone can type, so knowing a number would be enough to read or cancel its tickets, which breaks owner-only access; with one it needs an SMS provider. (b) Give guests a refresh token. Keeps tickets on one browser only, and reverses the decision that a guest session is bounded. (c) Require an account at the moment of booking, in the page.
+
+**Choice** (c). Browsing and seat selection need no session. Book and Hold open the account dialog when signed out, keep the selection, and carry out the booking once the person has registered or signed in. The page no longer calls `POST /auth/guest` or `/auth/upgrade`.
+
+**Consequences** A ticket bought through the page is tied to an account and reachable from any device by signing in. No visitor creates a `users` row by loading the page. The API is unchanged: REQ-003 and REQ-004 still hold, and the burst and the seed script still book as guests. This does **not** close RISK-014 — registration costs no more than a guest did, so the per-user limit is still per free principal. An anonymous visitor's reads are now rate limited by address rather than by principal.

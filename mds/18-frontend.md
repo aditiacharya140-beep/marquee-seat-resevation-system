@@ -32,9 +32,9 @@ The separate-site route is only worth it if the page later grows into a real app
 One page, four areas.
 
 ### 1. Header
-Service name, and who you are: "Guest" or your email. Buttons: **Sign in**, **Register**, **Sign out**.
+Service name, and your email once signed in. Buttons: **Sign in**, **Register**, **Sign out**.
 
-A visitor is given a guest session automatically on first load, so they can book immediately — the same path the API is designed around.
+Anyone can browse and pick seats without an account. **Booking or holding needs one** (ADR-037): pressing either while signed out opens the account dialog, and the booking is carried out as soon as the person has signed in or registered. The plan was a guest session on first load; see [As built](#as-built) for why that went.
 
 ### 2. Shows
 A list of shows, newest first: name, price, number of seats. "Load more" for the next page. Click a show to open it.
@@ -58,10 +58,8 @@ A small form: show name, price, and seats entered as a quick pattern (rows `A–
 
 | Screen action | Endpoint |
 |---|---|
-| First visit | `POST /auth/guest` |
 | Register / sign in | `POST /auth/register`, `POST /auth/login` |
 | Keep a signed-in session alive | `POST /auth/refresh` when a request answers 401 |
-| Turn a guest into an account, keeping bookings | `POST /auth/upgrade` |
 | List shows | `GET /shows?limit=…&cursor=…` |
 | Open a show, refresh the seat map | `GET /shows/{id}` |
 | Book now / hold | `POST /shows/{id}/reserve` (with or without `hold_ttl_seconds`) |
@@ -108,7 +106,8 @@ Nothing in the booking logic changes.
 
 - **"Yours" is a fifth seat state.** The API does not say who holds a seat, so the page reads the person's own active reservations for the open show and draws those seats green with a tick, instead of as held or sold.
 - **A failed request is not retried automatically.** After a timeout the selection and its idempotency key are kept and the person is told that pressing again is safe. Only a `429` is waited out and retried, with the same key.
-- **A guest whose token expires continues as a new guest**, and is told so; a guest has no refresh token, so its earlier bookings are no longer visible from the page.
+- **The page does not use guest sessions.** A guest is known only by a one-hour token kept in the tab, with no refresh token, so a guest's tickets became unreachable the moment the tab closed or the hour passed — the seat stayed sold and nobody could see the ticket. The page now asks for an account at the moment of booking instead (ADR-037). `POST /auth/guest` and `/auth/upgrade` are unchanged in the API and unused by the page.
+- **A session the server refuses ends cleanly.** If the refresh token is rejected the page signs out and says so; a booking attempted in that state asks for sign-in and then completes.
 - **Countdowns use the server's clock**, taken from the `Date` header, so a wrong clock on the device does not show a hold as live after it lapsed.
 - **The admin pattern is rows `A` to a chosen letter and a number of seats per row.** Per-seat prices and sections still need the API.
 - **The open show is kept in the URL fragment**, so a reload returns to it. Tokens are never in the URL.
@@ -122,7 +121,7 @@ The service's default event kind is `cinema`, and the page is dressed for it. No
 - **Price tiers are headed on the map.** Consecutive rows whose seats share one section and price sit under a heading such as `Recliner · ₹450`. A seat is marked "own price" only in a row that is not uniform.
 - **Rows of 14 or more get two aisles**, a quarter of the way in from each side. This is drawing only; the labels are untouched.
 - **A hall that does not form short lettered rows is drawn as a wrapped grid** with full labels — a row of more than 26 seats, or labels with no row letter.
-- **Shows left behind by the load test are not listed.** `burst/burst.py` names its shows `burst-…`, and the page skips that prefix; they are still reachable by id. The API has no way to close or delete a show.
+- **Shows left behind by the load test are not listed, and neither are bookings on them.** `burst/burst.py` names its shows `burst-…`, and the page skips that prefix; they are still reachable by id. The API has no way to close or delete a show; `scripts/delete_burst_shows.py` removes them, and what was booked on them, from the database directly.
 - **Bookings are drawn as tickets**, with a short booking id taken from the reservation id.
 - **Messages appear at the top of the page**, so one never covers the Confirm button it is about.
 - **`scripts/seed_demo.py` fills a deployment with a programme**: six films in a three-tier hall, about a third of each sold through the real guest-and-reserve path. It skips a show whose name already exists.
@@ -144,5 +143,5 @@ The rate-limit setting on Render had to be corrected first (`RATE_LIMIT_TRUSTED_
 2. Build the three files and the two small service changes on the `stage-4-frontend` branch.
 3. Run the test suite and try the page locally against a local database.
 4. Merge to `main`; Render redeploys.
-5. Open `https://seat-reservation-vw5k.onrender.com/` and walk through: guest booking, a hold and confirm, a cancel, and a seat lost to a second browser window.
+5. Open `https://seat-reservation-vw5k.onrender.com/` and walk through: a booking that asks for an account, a hold and confirm, a cancel, and a seat lost to a second browser window.
 6. Submit that URL.

@@ -56,6 +56,7 @@ Recorded honestly, because several materially improved the design and two preven
 | *"Should we remove guests completely?"* | Kept, after the reasoning: registration is exactly as free as a guest, so removing guests deletes a tested feature without closing anything |
 | *"Sync the mds with our codebase"* | The design set now describes what is built, with one document for what is not (ADR-035) |
 | *"Reason with me"* on the list endpoint | Surfaced that a performance guarantee in the repository contract — *"never scans seats, reads precomputed counts"* — was unsupported by the schema. There were no such counts, and the only way to create them was the denormalised tally already rejected. Would have shipped as an inconsistency |
+| *"This is broken right? I lost my booked ticket the moment my token refreshes"*, on the web page | Correct, and found by using the page rather than by any test: a guest's ticket was reachable only through a one-hour token held in the tab. The page now requires an account at the moment of booking. The user's first suggestion, a mobile number, was reasoned out of: without an OTP it would let anyone who knows a number read its tickets. ADR-037 |
 
 The pattern worth naming: **every instance of being asked to reason before acting produced a better design than acting would have.** Twice it corrected a recommendation already on the table.
 
