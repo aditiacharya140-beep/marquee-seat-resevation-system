@@ -77,7 +77,14 @@ class Run:
                     },
                     json={"seats": seats},
                 )
-            body = response.json() if response.content else {}
+            try:
+                body = response.json() if response.content else {}
+            except ValueError:
+                # Not this service's envelope. Every response the service writes carries
+                # X-Request-ID, so its absence means the platform's proxy answered instead.
+                origin = "service" if "X-Request-ID" in response.headers else "platform"
+                body = {"error": {"code": f"non_json_from_{origin}"}}
+                print(f"  non-JSON {response.status_code} from {origin}: {response.text[:120]!r}")
             result = Result(
                 status=response.status_code,
                 code=(body.get("error") or {}).get("code"),
@@ -86,7 +93,7 @@ class Run:
                 replay=response.headers.get("Idempotent-Replay") == "true",
                 seconds=time.perf_counter() - started,
             )
-        except (httpx.HTTPError, ValueError) as exc:
+        except httpx.HTTPError as exc:
             # A dropped connection is a failure of the service under load, counted as one.
             result = Result(599, type(exc).__name__, [], None, False, time.perf_counter() - started)
         self.results.append(result)
