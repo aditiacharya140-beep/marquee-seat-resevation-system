@@ -35,7 +35,7 @@ services:
       DATABASE_URL: postgresql://seatres:seatres@db:5432/seatres
       JWT_SECRET: dev-only-insecure-key-change-in-production
       ADMIN_EMAIL: admin@example.com
-      ADMIN_PASSWORD: dev-only-change-me
+      ADMIN_PASSWORD: seat-admin-2026
       ALLOWED_EVENT_KINDS: cinema,concert
       DEFAULT_EVENT_KIND: cinema
       DEFAULT_CURRENCY: INR

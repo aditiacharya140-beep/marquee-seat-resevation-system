@@ -78,16 +78,10 @@ async def me(principal: Principal) -> User:
 
 
 async def bootstrap_admin() -> None:
-    """Idempotent: an existing admin is never touched, so a changed password survives."""
-    async with acquire() as conn:
-        if await user_repo.admin_exists(conn):
-            return
+    """The admin account is whatever configuration says it is: created if absent, and
+    its password reset to the configured one on every start (ADR-037). Changing the
+    admin's credentials is therefore a configuration change and a restart."""
     password_hash = await security.hash_password(settings.admin_password.get_secret_value())
-    try:
-        async with acquire() as conn:
-            await user_repo.create_user(conn, settings.admin_email, password_hash, Role.ADMIN)
-    except ConflictError:
-        # Another instance won the same bootstrap, or the address belongs to a user.
-        logger.warning(LogEvent.ADMIN_BOOTSTRAP_SKIPPED)
-        return
+    async with acquire() as conn:
+        await user_repo.upsert_admin(conn, settings.admin_email, password_hash)
     logger.warning(LogEvent.ADMIN_BOOTSTRAPPED)

@@ -28,7 +28,7 @@ reservations_declined_total = Counter(
 )
 reservations_cancelled_total = Counter(
     "reservations_cancelled_total",
-    "Holds released by an explicit cancel",
+    "Reservations cancelled by their owner",
 )
 superseded_claims_closed_total = Counter(
     "superseded_claims_closed_total",
@@ -39,6 +39,18 @@ rate_limited_total = Counter(
     "rate_limited_total",
     "Requests refused with 429, by route class",
     ["route_class"],
+)
+audit_records_written_total = Counter(
+    "audit_records_written_total",
+    "Audit records written to the database",
+)
+audit_records_dropped_total = Counter(
+    "audit_records_dropped_total",
+    "Audit records dropped because the buffer was full or a flush failed",
+)
+audit_queue_depth = Gauge(
+    "audit_queue_depth",
+    "Audit records buffered and not yet written, at scrape time",
 )
 seats_available = Gauge(
     "seats_available",

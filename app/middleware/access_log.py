@@ -6,7 +6,7 @@ from http import HTTPStatus
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.core.constants import ACCESS_LOG_EXEMPT_PATHS, UNMATCHED_ROUTE_LABEL, LogEvent
-from app.core.context import get_outcome_code
+from app.core.context import get_outcome_code, request_facts
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -53,5 +53,6 @@ class AccessLogMiddleware:
                 "status": status,
                 "duration_ms": round((time.perf_counter() - started) * _MS_PER_SECOND, 3),
                 "outcome_code": get_outcome_code(),
+                "user_id": request_facts().get("user_id"),
             },
         )

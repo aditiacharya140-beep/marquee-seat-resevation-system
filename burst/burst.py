@@ -7,7 +7,8 @@ Exits non-zero if any invariant is violated.
 
 Phases: warm /readyz -> create show -> mint guests -> stampede (random seats, with
 reconciliation sampled mid-flight) -> hot-seat storm (barrier-released, one seat) ->
-idempotent retries (one key, fired concurrently) -> limit probe -> reconcile.
+idempotent retries (one key, fired concurrently) -> limit probe -> identity and
+release (spoofed user, owner-only cancel, re-book) -> reconcile.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ import httpx
 PER_USER_LIMIT = 4
 HOT_SEAT = "HOT"
 IDEM_SEATS = ["IDEM1", "IDEM2"]
+RELEASE_SEAT = "RELEASE1"
 LIMIT_PROBE_ATTEMPTS = PER_USER_LIMIT + 6
 IDEMPOTENT_DUPLICATES = 20
 WARM_TIMEOUT_SECONDS = 120
@@ -139,7 +141,7 @@ async def create_show(run: Run, general: list[str], probe: list[str]) -> None:
         headers={"Authorization": f"Bearer {login.json()['access_token']}"},
         json={
             "name": f"burst-{uuid.uuid4().hex[:8]}",
-            "seats": [*general, HOT_SEAT, *IDEM_SEATS, *probe],
+            "seats": [*general, HOT_SEAT, *IDEM_SEATS, RELEASE_SEAT, *probe],
             "price_paise": 25000,
             "per_user_limit": PER_USER_LIMIT,
         },
@@ -171,7 +173,7 @@ async def mint_guests(run: Run, count: int) -> list[str]:
 
 
 async def stampede(run: Run, tokens: list[str], general: list[str], rng: random.Random) -> None:
-    total = len(general) + 1 + len(IDEM_SEATS) + LIMIT_PROBE_ATTEMPTS
+    total = len(general) + 2 + len(IDEM_SEATS) + LIMIT_PROBE_ATTEMPTS
     samples: list[dict[str, int]] = []
     done = asyncio.Event()
 
@@ -241,6 +243,46 @@ async def limit_probe(run: Run, token: str, probe: list[str]) -> None:
     )
 
 
+async def identity_and_release(run: Run, owner: str, other: str) -> None:
+    """A spoofed identity acts only as the token's user; only the owner may cancel; and
+    a cancelled seat is cleanly re-bookable by someone else."""
+
+    def as_user(token: str) -> dict[str, str]:
+        return {"Authorization": f"Bearer {token}"}
+
+    owner_id = (await run.client.get("/auth/me", headers=as_user(owner))).json()["user_id"]
+    other_id = (await run.client.get("/auth/me", headers=as_user(other))).json()["user_id"]
+    # Not recorded with the other reserves: this booking is cancelled below, so it is
+    # deliberately absent from the "seats sold" tally the reconciliation checks.
+    spoofed = await run.client.post(
+        f"/shows/{run.show_id}/reserve",
+        headers=as_user(owner) | {"Idempotency-Key": uuid.uuid4().hex},
+        json={"seats": [RELEASE_SEAT], "user_id": other_id},
+    )
+    booking = spoofed.json()
+    run.check(
+        spoofed.status_code == 201 and booking.get("user_id") == owner_id,
+        "spoofed user_id in the body is ignored: the booking belongs to the token's user",
+    )
+    cancel_url = f"/reservations/{booking.get('reservation_id')}/cancel"
+    by_other = await run.client.post(cancel_url, headers=as_user(other))
+    run.check(
+        by_other.status_code == 404,
+        f"another user cannot cancel it (got {by_other.status_code}, expected 404)",
+    )
+    by_owner = await run.client.post(cancel_url, headers=as_user(owner))
+    run.check(by_owner.status_code == 200, f"the owner can cancel it (got {by_owner.status_code})")
+    rebooked = await run.reserve(other, [RELEASE_SEAT])
+    run.check(rebooked.status == 201, f"the released seat is re-bookable (got {rebooked.outcome})")
+    again = await run.client.post(cancel_url, headers=as_user(owner))
+    still = (await run.client.get(f"/shows/{run.show_id}")).json()["seats"]
+    seat = next(s for s in still if s["label"] == RELEASE_SEAT)
+    run.check(
+        again.status_code == 200 and seat["status"] == "confirmed",
+        "a repeat cancel does not take the seat back from its new owner",
+    )
+
+
 async def reconcile(run: Run, total: int, faults_before: float) -> None:
     final = await run.counts()
     sold = [label for r in run.results if r.status == 201 for label in r.seats]
@@ -278,7 +320,7 @@ async def main(args: argparse.Namespace) -> int:
     rng = random.Random(args.seed)
     general = [f"G{i:04d}" for i in range(args.seats)]
     probe = [f"LIMIT{i:02d}" for i in range(LIMIT_PROBE_ATTEMPTS)]
-    total = len(general) + 1 + len(IDEM_SEATS) + len(probe)
+    total = len(general) + 2 + len(IDEM_SEATS) + len(probe)
     async with httpx.AsyncClient(
         base_url=args.base_url.rstrip("/"),
         timeout=args.timeout,
@@ -289,7 +331,7 @@ async def main(args: argparse.Namespace) -> int:
         await warm(run)
         await create_show(run, general, probe)
         faults_before = await run.metric("unhandled_exceptions_total")
-        tokens = await mint_guests(run, args.users + args.hot + 2)
+        tokens = await mint_guests(run, args.users + args.hot + 4)
         buyers, rest = tokens[: args.users], tokens[args.users :]
         print(
             f"show {run.show_id}: {total} seats, {len(buyers)} buyers, {args.hot} on the hot seat\n"
@@ -300,6 +342,7 @@ async def main(args: argparse.Namespace) -> int:
         await hot_seat_storm(run, rest[: args.hot])
         await idempotent_retries(run, rest[-1])
         await limit_probe(run, rest[-2], probe)
+        await identity_and_release(run, rest[-3], rest[-4])
         elapsed = time.perf_counter() - started
         await reconcile(run, total, faults_before)
 

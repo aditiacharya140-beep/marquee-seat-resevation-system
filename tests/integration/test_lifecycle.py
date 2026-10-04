@@ -39,7 +39,7 @@ async def test_cancel_releases_the_seats_and_they_are_rebookable(
     assert counts == {"available": 0, "held": 0, "confirmed": 2, "total": 2}
 
 
-async def test_confirm_promotes_a_hold_and_a_sold_seat_is_not_cancellable(
+async def test_confirm_promotes_a_hold(
     client: httpx.AsyncClient, new_show: Callable[..., Any], new_guest: Callable[[], Any]
 ) -> None:
     show = await new_show(["A1"])
@@ -49,16 +49,53 @@ async def test_confirm_promotes_a_hold_and_a_sold_seat_is_not_cancellable(
 
     confirmed = await client.post(f"{base}/confirm", headers=holder)
     repeated = await client.post(f"{base}/confirm", headers=holder)
-    cancel = await client.post(f"{base}/cancel", headers=holder)
     fetched = await client.get(base, headers=holder)
 
     assert confirmed.status_code == repeated.status_code == 200
     assert confirmed.json()["status"] == "confirmed"
     assert "expires_at" not in confirmed.json()
-    assert (cancel.status_code, error_code(cancel)) == (409, "RESERVATION_CONFIRMED")
     assert fetched.json() == confirmed.json()
     counts = (await client.get(f"/shows/{show['show_id']}")).json()["counts"]
     assert counts == {"available": 0, "held": 0, "confirmed": 1, "total": 1}
+
+
+async def test_a_confirmed_booking_can_be_cancelled_by_its_owner_only_and_rebooked(
+    client: httpx.AsyncClient, new_show: Callable[..., Any], new_guest: Callable[[], Any]
+) -> None:
+    """The default reserve confirms outright, so this is the cancel a client actually
+    makes: book, cancel, and the seat is cleanly available to someone else."""
+    show = await new_show(["A1", "A2"], per_user_limit=2)
+    _, owner = await new_guest()
+    _, other = await new_guest()
+    booked = (await reserve(client, show["show_id"], owner, ["A1", "A2"])).json()
+    url = f"/reservations/{booked['reservation_id']}/cancel"
+    assert booked["status"] == "confirmed"
+
+    by_other = await client.post(url, headers=other)
+    cancelled = await client.post(url, headers=owner)
+    after_cancel = (await client.get(f"/shows/{show['show_id']}")).json()["counts"]
+    rebooked = await reserve(client, show["show_id"], other, ["A1", "A2"])
+    repeated = await client.post(url, headers=owner)
+    confirm_after_cancel = await client.post(
+        f"/reservations/{booked['reservation_id']}/confirm", headers=owner
+    )
+    # The cancel freed the owner's allowance, so the limit is not what declines this.
+    owner_again = await reserve(client, show["show_id"], owner, ["A1"])
+
+    assert (by_other.status_code, error_code(by_other)) == (404, "RESERVATION_NOT_FOUND")
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    assert after_cancel == {"available": 2, "held": 0, "confirmed": 0, "total": 2}
+    assert rebooked.status_code == 201
+    # A repeat cancel is idempotent and must not take the seats from their new owner.
+    assert repeated.status_code == 200
+    assert (confirm_after_cancel.status_code, error_code(confirm_after_cancel)) == (
+        409,
+        "RESERVATION_CANCELLED",
+    )
+    assert (owner_again.status_code, error_code(owner_again)) == (409, "SEAT_TAKEN")
+    final = (await client.get(f"/shows/{show['show_id']}")).json()["counts"]
+    assert final == {"available": 0, "held": 0, "confirmed": 2, "total": 2}
 
 
 async def test_a_principal_lists_only_their_own_reservations(

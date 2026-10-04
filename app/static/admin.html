@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Seat Reservation — Admin</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/admin.css">
+  <script src="/static/admin.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Seat Reservation <span class="tag">Admin</span></div>
+    <div class="account">
+      <a class="btn ghost" href="/">Booking page</a>
+      <span id="who" class="who"></span>
+      <button id="btn-signout" class="btn ghost" type="button" hidden>Sign out</button>
+    </div>
+  </header>
+
+  <main class="admin">
+    <section id="signin" class="panel narrow" hidden>
+      <h2>Admin sign in</h2>
+      <form id="signin-form" class="form">
+        <label>Email <input name="email" type="email" autocomplete="username" required></label>
+        <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+        <button class="btn" type="submit">Sign in</button>
+        <p id="signin-error" class="error small" role="alert"></p>
+      </form>
+    </section>
+
+    <div id="console" hidden>
+      <nav class="tabs" role="tablist">
+        <button class="tab active" data-tab="overview" type="button">Overview</button>
+        <button class="tab" data-tab="shows" type="button">Shows</button>
+        <button class="tab" data-tab="audit" type="button">Audit trail</button>
+        <button class="tab" data-tab="logs" type="button">Logs</button>
+        <span class="spacer"></span>
+        <label class="inline small muted"><input id="auto" type="checkbox" checked> Refresh every 5s</label>
+        <span id="updated" class="small muted"></span>
+      </nav>
+      <p id="notice" class="error small" role="alert"></p>
+
+      <section id="tab-overview" class="tabpane">
+        <div class="toolbar">
+          <label class="inline small muted">Window
+            <select id="window">
+              <option value="5">5 minutes</option>
+              <option value="15" selected>15 minutes</option>
+              <option value="60">1 hour</option>
+              <option value="1440">24 hours</option>
+            </select>
+          </label>
+        </div>
+        <div id="cards" class="cards"></div>
+        <div class="grid2">
+          <section class="panel">
+            <h2>Requests per minute</h2>
+            <div id="chart" class="chart" aria-label="Requests per minute"></div>
+            <p class="small muted legend"><span class="dot ok"></span>answered <span class="dot warn"></span>declined (4xx) <span class="dot bad"></span>server errors</p>
+          </section>
+          <section class="panel">
+            <h2>Declines by reason</h2>
+            <table id="outcomes" class="table"></table>
+          </section>
+        </div>
+        <section class="panel">
+          <h2>Routes</h2>
+          <table id="routes" class="table"></table>
+        </section>
+        <section class="panel">
+          <h2>Counters since this process started</h2>
+          <table id="counters" class="table"></table>
+        </section>
+      </section>
+
+      <section id="tab-shows" class="tabpane" hidden>
+        <div class="grid2">
+          <section class="panel">
+            <h2>Create a show</h2>
+            <form id="show-form" class="form">
+              <label>Name <input name="name" required maxlength="200" value="friday-night"></label>
+              <label>Price per seat (₹) <input name="price" type="number" min="0" step="1" value="250" required></label>
+              <div class="row">
+                <label>Rows <input name="rows" type="number" min="1" max="26" value="5" required></label>
+                <label>Seats per row <input name="per_row" type="number" min="1" max="100" value="10" required></label>
+                <label>Limit per person <input name="limit" type="number" min="1" value="4" required></label>
+              </div>
+              <p id="show-preview" class="small muted"></p>
+              <button class="btn" type="submit">Create show</button>
+              <p id="show-result" class="small" role="status"></p>
+            </form>
+          </section>
+          <section class="panel">
+            <h2>Recent shows</h2>
+            <table id="shows" class="table"></table>
+          </section>
+        </div>
+      </section>
+
+      <section id="tab-audit" class="tabpane" hidden>
+        <form id="audit-filter" class="toolbar">
+          <input name="status_code" type="number" placeholder="Status, e.g. 409" min="100" max="599">
+          <input name="outcome_code" placeholder="Outcome, e.g. SEAT_TAKEN">
+          <input name="request_id" placeholder="Request id">
+          <input name="show_id" placeholder="Show id">
+          <button class="btn" type="submit">Filter</button>
+          <button id="audit-clear" class="btn ghost" type="button">Clear</button>
+        </form>
+        <section class="panel">
+          <table id="audit" class="table"></table>
+          <button id="audit-more" class="btn ghost block" type="button" hidden>Load older</button>
+        </section>
+      </section>
+
+      <section id="tab-logs" class="tabpane" hidden>
+        <form id="logs-filter" class="toolbar">
+          <select name="level">
+            <option value="">Any level</option>
+            <option value="info">info</option>
+            <option value="warning">warning</option>
+            <option value="error">error</option>
+          </select>
+          <input name="event" placeholder="Event, e.g. app_error">
+          <input name="request_id" placeholder="Request id">
+          <button class="btn" type="submit">Filter</button>
+          <button id="logs-clear" class="btn ghost" type="button">Clear</button>
+        </form>
+        <p class="small muted">The newest lines this process has written since it last started. Secrets are redacted before a line is ever stored.</p>
+        <section class="panel">
+          <div id="logs" class="logs"></div>
+        </section>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

@@ -11,7 +11,7 @@ from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.core.constants import SCOPE_REQUEST_ID, Header
-from app.core.context import outcome_code_var, request_id_var
+from app.core.context import outcome_code_var, request_facts_var, request_id_var
 
 
 def _resolve_request_id(inbound: str | None) -> str:
@@ -48,8 +48,10 @@ class RequestContextMiddleware:
 
         request_id_token = request_id_var.set(request_id)
         outcome_token = outcome_code_var.set(None)
+        facts_token = request_facts_var.set({})
         try:
             await self.app(scope, receive, send_with_request_id)
         finally:
             request_id_var.reset(request_id_token)
             outcome_code_var.reset(outcome_token)
+            request_facts_var.reset(facts_token)

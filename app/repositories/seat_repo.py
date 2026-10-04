@@ -134,15 +134,17 @@ async def labels_not_in_show(
 
 
 async def release_for_reservation(conn: asyncpg.Connection, reservation_id: UUID) -> list[str]:
-    """Return a hold's seats, guarded on current ownership and on the hold being live,
-    so it can never take a seat from whoever claimed it after a lapse (ADR-022)."""
+    """Return a reservation's seats, guarded on current ownership and on the claim
+    still being active — confirmed, or a live hold. A seat that lapsed and was claimed
+    by someone else carries their `reservation_id`, so it cannot match and a release
+    can never take a seat from its new owner (ADR-022, ADR-036)."""
     with contention_is_a_decline():
         rows = await conn.fetch(
-            """
+            f"""
             WITH owned AS (
                 SELECT id, label FROM seats
                  WHERE reservation_id = $1
-                   AND status = 'held' AND hold_expires_at > now()
+                   AND {SEAT_ACTIVE}
                  ORDER BY label
                    FOR UPDATE
             ),

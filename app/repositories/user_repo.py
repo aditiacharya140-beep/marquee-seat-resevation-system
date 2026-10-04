@@ -39,6 +39,25 @@ async def create_user(conn: asyncpg.Connection, email: str, password_hash: str, 
     return _user(row)
 
 
+async def upsert_admin(conn: asyncpg.Connection, email: str, password_hash: str) -> None:
+    """Make the configured admin exist with the configured password, whatever was
+    there before. One statement, so two instances booting together cannot both insert."""
+    await conn.execute(
+        """
+        INSERT INTO users (id, email, password_hash, role, is_guest, request_id)
+        VALUES ($1, $2, $3, $4, false, $5)
+        ON CONFLICT (LOWER(email)) WHERE email IS NOT NULL
+        DO UPDATE SET password_hash = EXCLUDED.password_hash, role = EXCLUDED.role,
+                      is_guest = false, updated_at = now()
+        """,
+        uuid4(),
+        email,
+        password_hash,
+        Role.ADMIN.value,
+        current_request_id(),
+    )
+
+
 async def create_guest(conn: asyncpg.Connection) -> User:
     row = await conn.fetchrow(
         """

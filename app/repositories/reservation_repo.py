@@ -156,7 +156,9 @@ async def list_for_user(
 
 
 async def cancel_owned(conn: asyncpg.Connection, reservation_id: UUID, user_id: UUID) -> bool:
-    """The decision for a cancel: one guarded UPDATE whose row count is the answer."""
+    """The decision for a cancel: one guarded UPDATE whose row count is the answer.
+    A confirmed booking is cancellable by its owner, as is a live hold; a lapsed hold
+    is not — its seats are already effectively available (ADR-036)."""
     return await _decide(
         conn,
         """
@@ -164,7 +166,7 @@ async def cancel_owned(conn: asyncpg.Connection, reservation_id: UUID, user_id: 
            SET status = 'cancelled', cancelled_at = now(), hold_expires_at = NULL,
                updated_at = now(), request_id = $3
          WHERE id = $1 AND user_id = $2
-           AND status = 'held' AND hold_expires_at > now()
+           AND (status = 'confirmed' OR (status = 'held' AND hold_expires_at > now()))
         RETURNING id
         """,
         reservation_id,
