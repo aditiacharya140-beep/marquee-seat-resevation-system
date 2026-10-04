@@ -350,13 +350,13 @@ UPDATE reservations
    AND status = 'held' AND hold_expires_at > now()
 RETURNING id, show_id, seat_count, amount_paise, currency, confirmed_at;
 
--- cancel
+-- cancel: a confirmed booking, or a live hold (ADR-036)
 UPDATE reservations
    SET status='cancelled', cancelled_at=now(), hold_expires_at=NULL,
        updated_at=now(), request_id=$request_id
  WHERE id = $reservation_id AND user_id = $user_id
-   AND status = 'held' AND hold_expires_at > now()
-RETURNING id, show_id, seat_count, cancelled_at;
+   AND (status = 'confirmed' OR (status = 'held' AND hold_expires_at > now()))
+RETURNING id;
 ```
 
 Three things come out of making the `reservations` row the decision point: the row lock serializes that principal's concurrent confirms and cancels, `user_id` in the `WHERE` clause makes ownership a predicate rather than a fetch-then-compare, and the returned row count is the decision with no window between check and effect — the same shape as the claim.
@@ -368,7 +368,7 @@ Three things come out of making the `reservations` row the decision point: the r
 WITH owned AS (
     SELECT id, label FROM seats
      WHERE reservation_id = $reservation_id
-       AND status = 'held' AND hold_expires_at > now()
+       AND (status = 'confirmed' OR (status = 'held' AND hold_expires_at > now()))
      ORDER BY label
        FOR UPDATE
 ),
@@ -410,7 +410,9 @@ Four properties, each load-bearing:
 - **A seat that has moved on does not match.** Re-claimed by someone else, so `reservation_id` now points elsewhere: zero rows, so the release cannot take a seat from its new owner and the confirm cannot steal it back.
 - **A shortfall rolls back.** Fewer rows than `seat_count` means some seat is no longer this reservation's, so the transaction aborts and the request answers 409 `SEAT_TAKEN`. The shortfall is believed unreachable — `now()` is transaction-stable (LEARN-007), so a reservation that is unexpired at that instant cannot own a seat that is expired at the same instant — but it is asserted rather than assumed, because the argument depends on that semantic.
 
-**Zero rows from the decision statement** means the service must still say *why*. It re-reads the reservation owner-scoped, using the reservation effective-status expression, purely to choose the code: `cancelled` → 200 for a repeat cancel or 409 `RESERVATION_CANCELLED` for a confirm; `confirmed` → 200 for a repeat confirm or 409 `RESERVATION_CONFIRMED` for a cancel; effectively `expired` → 409 `RESERVATION_EXPIRED`; absent or not owned → 404 `RESERVATION_NOT_FOUND`. That read is outside the lock and may observe a later state than the one that caused the decline. It is diagnosis, not control: the decision was already made and committed to, and every state the read can report is a state the reservation genuinely held.
+**Zero rows from the decision statement** means the service must still say *why*. It re-reads the reservation owner-scoped, using the reservation effective-status expression, purely to choose the code: `cancelled` → 200 for a repeat cancel or 409 `RESERVATION_CANCELLED` for a confirm; `confirmed` → 200 for a repeat confirm (a cancel of a confirmed reservation succeeds, so it does not reach this read); effectively `expired` → 409 `RESERVATION_EXPIRED`; absent or not owned → 404 `RESERVATION_NOT_FOUND`. That read is outside the lock and may observe a later state than the one that caused the decline. It is diagnosis, not control: the decision was already made and committed to, and every state the read can report is a state the reservation genuinely held.
+
+**Cancel releases a confirmed booking too (ADR-036).** A reserve confirms by default, so a cancel that refused confirmed reservations refused the normal case. The release is safe for the same reason it is safe for a hold: it is guarded on `reservation_id`, and a seat is only ever confirmed to the reservation whose id it carries. A confirmed seat cannot lapse, so there is no window in which it could have been re-claimed while still naming this reservation.
 
 Cancel of a lapsed hold is therefore 409 `RESERVATION_EXPIRED`, not a silent successful release. Nothing is leaked by refusing: the seats are already effectively available, and their stale `reservation_seats` rows are closed by the next claim under Mechanism 3.
 

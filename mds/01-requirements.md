@@ -112,8 +112,8 @@ A reserve on a show that is not on sale returns 409 `SHOW_NOT_ON_SALE`.
 
 Confirming a cancelled reservation returns 409 `RESERVATION_CANCELLED`. Confirming a reservation whose hold has **lapsed** returns 409 `RESERVATION_EXPIRED` with `details.status`, whether or not its seats have since been re-claimed — the statement carries `hold_expires_at > now()`, so expiry is enforced by the same mechanism that enforces ownership and there is no background worker whose lag could make a lapsed hold promotable (ADR-022). Where a lapsed hold's seat has already been re-claimed by another principal, the confirm returns 409 and the new owner's seat is untouched.
 
-**REQ-031** `M` `user` — Cancel a hold.
-`POST /reservations/{id}/cancel` by the owner releases a `held` reservation's seats to `available`, sets status `cancelled`, and closes its `reservation_seats` rows. Cancelling an already-cancelled reservation is idempotent and returns 200. Cancelling a `confirmed` reservation returns 409 `RESERVATION_CONFIRMED` — a sold seat is not released through this route. Cancelling a reservation whose hold has lapsed returns 409 `RESERVATION_EXPIRED`: its seats are already effectively available, so there is nothing to release, and reporting the real state is more useful than a successful no-op.
+**REQ-031** `M` `user` — Cancel a reservation.
+`POST /reservations/{id}/cancel` by the owner releases the seats of a **confirmed** reservation or a live hold to `available`, sets status `cancelled`, and closes its `reservation_seats` rows (ADR-036). Cancelling an already-cancelled reservation is idempotent and returns 200, and never takes a seat back from whoever booked it since. Cancelling a reservation whose hold has lapsed returns 409 `RESERVATION_EXPIRED`: its seats are already effectively available, so there is nothing to release, and reporting the real state is more useful than a successful no-op.
 
 **REQ-032** `M` `user` — Only the owner may act.
 A confirm or cancel by any principal other than the reservation's owner returns 404 `RESERVATION_NOT_FOUND` — existence is not disclosed to a non-owner. Admin override, if enabled, is a separate route.
@@ -156,7 +156,7 @@ Every request is assigned a UUID request id — taken from `X-Request-ID` when i
 **REQ-045** `M` `system` — Structured logs.
 Every log line is single-line JSON with `ts`, `level`, `event`, `request_id`. No secrets, tokens, or password material is ever logged.
 
-**REQ-046** `M` `system` — Audit without backpressure. **Not built — [17-future-scope.md](17-future-scope.md), item 2.**
+**REQ-046** `M` `system` — Audit without backpressure.
 Every request is recorded to an audit table through a bounded in-memory queue drained by a batched writer. The request path never blocks on the audit write. Queue saturation drops records, increments a drop counter, and does not degrade request handling.
 
 **REQ-047** `M` `system` — Rate limiting.
@@ -200,7 +200,7 @@ Every monetary value is an integer count of paise, stored as `BIGINT`, transport
 | REQ-024, 025 | `test_reserve.py::test_a_replay_answers_200_with_the_original_body`, `tests/unit/test_canonical_json.py` | covered |
 | REQ-026 concurrent duplicates | `test_reserve_races.py::test_one_key_fired_concurrently_reserves_once`, `tests/integration/test_reserve_edges.py` (timeout, stale takeover) | covered |
 | REQ-029 not on sale | `test_reserve_edges.py::test_a_show_that_is_not_on_sale_declines` | covered; no API takes a show off sale, so the test sets the status directly |
-| REQ-030, 031, 032, 035 | `tests/integration/test_lifecycle.py`, `test_reserve_edges.py::test_only_the_owner_may_confirm_or_read` | covered |
+| REQ-030, 031, 032, 035 | `tests/integration/test_lifecycle.py` (including cancel of a confirmed booking and re-booking), `test_reserve_edges.py::test_only_the_owner_may_confirm_or_read`, the burst's release probe | covered |
 | REQ-033 holds expire | `test_reserve_races.py::test_a_lapsed_hold_is_claimable_with_no_sweeper`, `test_reserve_edges.py::test_a_lapsed_hold_reads_expired_frees_the_limit_and_cannot_be_cancelled` | covered |
 | REQ-034 release never resurrects | `test_lifecycle.py` (repeat cancel after re-booking), lapsed-claim test above | **partial** — the cancel/confirm race against a competing claim across the expiry boundary is not tested |
 | REQ-036 read own reservations | `test_lifecycle.py::test_a_principal_lists_only_their_own_reservations` | covered |
@@ -208,7 +208,7 @@ Every monetary value is an integer count of paise, stored as `BIGINT`, transport
 | REQ-041 readiness | `tests/integration/test_readyz.py` | covered |
 | REQ-042 metrics | `tests/integration/test_metrics.py` | **partial** — no latency histogram, `db_pool_waiting`, `seat_claim_lock_wait_seconds` or audit series |
 | REQ-043 metrics reconcile | `test_metrics.py`, `burst/` | covered |
-| REQ-046 audit | — | **not built** (ADR-032) |
+| REQ-046 audit | `tests/integration/test_admin.py` | covered: a full buffer drops and counts, and every request still succeeds |
 | REQ-047 rate limiting | `tests/integration/test_rate_limit.py` | covered; `auth` is keyed by address only, not address and email (ADR-034) |
 | REQ-048 no 5xx | `test_reserve_edges.py::test_a_lock_timeout_is_a_409_never_a_500`, race tests, `burst/` | covered for lock timeout; deadlock and backstop translation are not injected by a test |
 | REQ-049 cold start | `burst/` warms `/readyz` before measuring | covered by the script; cold-start time is not measured |

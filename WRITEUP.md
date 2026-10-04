@@ -114,6 +114,14 @@ The key row is an ownership token; `UNIQUE (user_id, key)` decides who owns it.
 A reserve confirms outright by default; a hold is opt-in via `hold_ttl_seconds`. That
 keeps the path load actually exercises free of any expiry edge.
 
+**Both release models are built.** The owner can cancel a confirmed booking or a
+live hold: one guarded `UPDATE` on the reservation row decides it, then the seats are
+released by an ordered `FOR UPDATE` guarded on `reservation_id` — so a cancel can only
+ever release seats that reservation still owns. A seat that lapsed and was claimed by
+someone else carries their reservation id and cannot match; a repeat cancel is a
+no-op. The first version only cancelled holds, which against a service that confirms
+by default meant cancel refused the normal case; reading the brief again caught it.
+
 Expiry is **lazy, and that is all of it**: `status = 'held' AND hold_expires_at <=
 now()` is an arm of the claim predicate, so a lapsed hold is claimable the instant it
 lapses. There is no sweeper — its only job would be making stored state match
@@ -157,6 +165,7 @@ real attempt.
 | `/readyz` failing | Database unreachable; nothing can be sold |
 | `claim_deadlock` in the logs | The lock order was broken by a change |
 | `reservations_declined_total{reason="lock_timeout"}` climbing | Hot-seat queues are exceeding the lock timeout |
+| `audit_records_dropped_total` climbing | The audit buffer is full: the writer is stalled or the database is slow. Bookings are unaffected by design, which is why this needs an alert of its own |
 | `rate_limited_total` climbing on `reserve` or `read` | Real users are being throttled: a ceiling is too low, or the proxy-hop count is wrong and clients share a bucket |
 
 Deliberately **not** paging: a high rate of `seat_taken`, `per_user_limit` or
@@ -165,7 +174,7 @@ fires whenever the product succeeds gets muted.
 
 ## Evidence
 
-- **316 tests, 96% line and branch coverage of `app/`**, all against real PostgreSQL
+- **331 tests, 96% line and branch coverage of `app/`**, all against real PostgreSQL
   with the real migration; nothing is mocked. They have only ever run on the
   development machine: GitHub Actions is not enabled for the repository.
 - `tests/concurrency/` — one test per invariant against real PostgreSQL: hot seat (60
@@ -179,6 +188,11 @@ fires whenever the product succeeds gets muted.
   three inputs that returned a 500 where a 4xx was owed (a lock timeout on
   confirm/cancel, a NUL character, a token for a missing user); each is fixed with a
   test (LEARN-017).
+- **20,000 buyers locally**, one uvicorn worker, pool of 20, 5,000 requests in flight:
+  20,530 reserves in 95s — 2,975 created, 17,529 `SEAT_TAKEN`, hot seat 1 winner of
+  500, 3,901 seats sold and none twice, every reconciliation sample held, and no 5xx
+  and no error line from the service. One request was dropped by the client's own
+  connection. Latency at that depth was poor (p50 11s): one Python process.
 - Local burst, one uvicorn worker, pool of 20: 3,530 reserve requests in 9.6s with 500
   in flight — 705 created, 2,800 `SEAT_TAKEN`, 19 replays, 6 `PER_USER_LIMIT`, **zero
   5xx**, hot seat 1 winner of 500, every reconciliation check green. Latency at that
@@ -225,27 +239,76 @@ precisely so that a wrong setting is visible from outside; that is how the first
 found, and counting requests that should have been refused is how the second was.
 Neither failure would have shown in a test suite or a passing burst.
 
+## Observability: what is built
+
+- **`/metrics`**: reservations confirmed, declined by reason (`seat_taken`,
+  `per_user_limit`, `idempotent_replay`, `lock_timeout`, …), cancelled; seats
+  available per show, read from the database at scrape time with the claim's own
+  predicate so it cannot disagree with the API; `unhandled_exceptions_total`, the
+  direct measure of "zero 5xx"; audit written, dropped and buffered.
+- **Structured logs**: single-line JSON, every line with `request_id`, declines at
+  `info` so the error stream contains only faults, secrets redacted by the formatter.
+  Written by a separate thread through a bounded queue, so a stalled log consumer
+  cannot block a booking.
+- **An audit trail**: one row per request — who, which show, which seats, status,
+  duration, outcome, request id. The request path appends to an in-memory buffer and
+  **never waits**: a full buffer drops the record and counts it. A writer task drains
+  it in batches on its own database connection, outside the request pool. A test
+  sizes the buffer to one, fires thirty bookings, and asserts all thirty succeed
+  while twenty-nine records are dropped. Losing an audit row is an inconvenience;
+  failing a booking is a defect.
+- **An admin console** at `/admin`: the numbers above over a time window, latency per
+  route from the audit trail, the trail itself with filters, and the live logs —
+  click a request id in the trail to see its log lines. This is the "logs access" the
+  platform does not offer publicly.
+- **`/readyz`** runs a real query, fails closed, and reports whether rate limiting is
+  on.
+
+One thing the audit trail showed at once: at the innermost layer a reserve takes about
+5 ms, while the same burst's clients saw hundreds. The time is spent queueing in front
+of the handler, in a single Python process — not in the database and not on row locks.
+
+## How the live service is configured
+
+The deployed service is deliberately not configured as a production service would be,
+and the differences matter to anyone testing it.
+
+| Setting | Live | A real launch | Consequence on the live service |
+|---|---|---|---|
+| Rate limiting | **off** | on | A load test from one machine is never throttled. Nor is abuse: the per-user limit can be sidestepped by creating guests |
+| Access token lifetime | **1 hour** | 15 minutes, with refresh | A long test does not lose its tokens mid-run. After an hour a request answers `401 UNAUTHENTICATED` and the client must sign in again — or refresh, if it registered |
+| Guest token lifetime | 1 hour | 1 hour | A guest cannot refresh. The session ends |
+| Admin credentials | **published in the README**, reset at every start | secret | Anyone can create shows and read the audit trail and logs. Nothing can be deleted, and no secret is ever logged |
+| Instance | free: a fraction of a CPU, sleeps when idle | sized for the on-sale | About 19 bookings a second. A 20,000-request burst will be timed out by clients and by the platform's proxy long before the service has answered it |
+| Database pool | 20 | sized to the database | Requests beyond that wait for a connection rather than fail |
+| Processes | 1 | several | Counters, rate-limit buckets and the log view are per process and reset on restart |
+
+The correctness properties do not depend on any of these. What does is throughput,
+and the free instance cannot be scaled from here; the same container runs anywhere
+with `docker compose up`, which is how the 20,000-buyer figure below was measured.
+
 ## What is not built
 
-The design set in [mds/](mds/00-overview.md) now describes the service as it is;
+The design set in [mds/](mds/00-overview.md) describes the service as it is;
 [mds/17-future-scope.md](mds/17-future-scope.md) is the one place that lists what it
 is not. In short:
 
-- **The audit trail.** Structured logs carry `request_id` and every row is stamped
-  with it, so "what did this request do" is answerable; "every declined reserve on
-  this show in ten minutes" is not, without a log search.
-- **Part of the metric catalogue**: the latency histogram, pool gauges and the
-  lock-wait histogram. Two alerts the design wants can therefore only fire after the
-  fact.
+- **A payment or identity step.** Without one the per-user limit bounds an account,
+  not a person.
+- **Part of the metric catalogue**: an HTTP latency histogram and pool gauges on
+  `/metrics`. Latency per route is available in the admin console, from the audit
+  trail, but not as a Prometheus series.
 - **Taking a show off sale**, and sale windows.
 - **Refresh-token revocation**; refresh is stateless.
 - **A single log line for a crash**: an unhandled exception is logged twice, once
   without its request id.
 
 And what is built but less proven than it should be: only the claim path has had an
-adversarial review; the burst has run live at its default size, never near the scale the design is sized for; the
-negative controls were run by hand, not as a permanent test; and nobody has verified
-the README from a clean clone.
+adversarial review; the burst has run live at its default size, never near the scale
+the design is sized for; the negative controls were run by hand, not as a permanent
+test; the admin console has been exercised through its API and not checked in a range
+of browsers; and nobody has verified the README from a clean clone on another
+machine.
 
 ## What comes next
 

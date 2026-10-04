@@ -4,7 +4,7 @@
 
 ## Status — 2026-10-04
 
-This board was written before the build and before several ADRs. It is kept as the record of how the work was decomposed. **It is not the authority on behaviour**: where a `Done when` line disagrees with an ADR, the ADR and the documents 02–13 are right. Known disagreements: SEAT-031 and SEAT-042 expect a stored decline to replay and the same key on another show to succeed (ADR-020 and ADR-021 say otherwise); SEAT-034 expects a body carrying `user_id` to be a 422 (ADR-028: ignored); SEAT-019 and SEAT-024 list indexes ADR-017 dropped; SEAT-033 expects a rolled-back T2 to leave the key `in_progress` (ADR-020: released).
+This board was written before the build and before several ADRs. It is kept as the record of how the work was decomposed. **It is not the authority on behaviour**: where a `Done when` line disagrees with an ADR, the ADR and the documents 02–13 are right. Known disagreements: SEAT-045 expects cancelling a confirmed reservation to be refused (ADR-036: it succeeds); SEAT-031 and SEAT-042 expect a stored decline to replay and the same key on another show to succeed (ADR-020 and ADR-021 say otherwise); SEAT-034 expects a body carrying `user_id` to be a 422 (ADR-028: ignored); SEAT-019 and SEAT-024 list indexes ADR-017 dropped; SEAT-033 expects a rolled-back T2 to leave the key `in_progress` (ADR-020: released).
 
 Judged by the board's own rule — every `Done when` check observably true — almost nothing below is closed, because most tickets name tests and static checks that were not written. Judged by whether the behaviour exists and is tested:
 
@@ -14,7 +14,8 @@ Judged by the board's own rule — every `Done when` check observably true — a
 | **Built, with named gaps** | 011 (no cold-start test) · 013 (Argon2 parameters not configurable) · 014 (principal not in a context var) · 017, 022, 047, 053 (test suites narrower than specified) · 020 (no statement-count test) · 027 (two of four probes) · 035 (no serialization retry; deadlock and backstop not injected) · 036 (no static money check) · 037 (`asyncio.gather`, no barrier fixture) · 040 (overlap tested sequentially and in opposite orders, not as specified) · 048 (lapsed-claim only) · 050 (part of the catalogue) · 055–058 (burst: no spoof or lifecycle phase, no exit self-test, no pool tuning) · 059 (live at 200 buyers, not full scale) · 066 (envelope yes, single log line no) |
 | **Deliberately not built as specified** | 025 — there is no `claim_one`; one seat goes through `claim_many` |
 | **Review tickets** | 007 done · 044 done (LEARN-017) · 012, 018, 023, 049, 054, 060 **not run** |
-| **Not started** | 043 (negative controls as a module; run once by hand) · 051 (audit) · 063 (clean-clone verification) · 064, 065 (monitoring view) |
+| **Built after this board was last revised** | 051 (audit) · 064, 065 (the admin console, which also shows logs) |
+| **Not started** | 043 (negative controls as a module; run once by hand) · 063 (clean-clone verification on another machine) |
 
 Everything in the last three rows and every gap in the second is carried in [17-future-scope.md](17-future-scope.md).
 

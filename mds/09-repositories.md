@@ -30,6 +30,7 @@ Deliberately not a generic `Repository[T]`. The interesting operations here are 
 create_user(conn, email, password_hash, role)        -> User
 create_guest(conn)                                    -> User
 upgrade_guest(conn, user_id, email, password_hash)    -> User | None
+upsert_admin(conn, email, password_hash)              -> None
 get_by_email(conn, email)                             -> User | None
 get_by_id(conn, user_id)                              -> User | None
 admin_exists(conn)                                    -> bool
@@ -67,7 +68,7 @@ confirm_for_reservation(conn, reservation_id)                           -> list[
 
 `claim_many` returns what it claimed; the **service** compares the count to the request and rolls back. A single-seat request goes through the same statement — there is no separate `claim_one`. `labels_not_in_show` is diagnosis after a shortfall, to tell 404 from 409; it is never part of the decision.
 
-`release_for_reservation` and `confirm_for_reservation` are the ordered `FOR UPDATE` CTEs of ADR-022, guarded on `reservation_id` **and** `hold_expires_at > now()`, with `ORDER BY label`.
+`release_for_reservation` and `confirm_for_reservation` are the ordered `FOR UPDATE` CTEs of ADR-022, guarded on `reservation_id`, with `ORDER BY label`. Confirm requires a live hold; release requires the seat to be active — confirmed, or a live hold.
 
 There is no `sweep_expired`. There is no sweeper (ADR-017).
 
@@ -85,7 +86,7 @@ close_claims_for_reservation(conn, reservation_id)            -> None
 
 `get_owned` and `list_for_user` take the owner as part of the `WHERE` clause. There is no `get(reservation_id)` to accidentally use without an ownership filter — the unsafe method does not exist, which is stronger than remembering to filter. Both apply the reservation effective-status expression, so a lapsed hold reads `expired`, never `held`.
 
-`cancel_owned` and `confirm_owned` are the guarded `UPDATE`s on the `reservations` row: owner, `status = 'held'` and `hold_expires_at > now()` in the `WHERE` clause. `False` is the decision; the service then calls `get_owned` to choose the decline code, which is diagnosis and not control.
+`cancel_owned` and `confirm_owned` are the guarded `UPDATE`s on the `reservations` row, with the owner in the `WHERE` clause. Confirm matches a live hold; cancel matches a live hold **or a confirmed reservation** (ADR-036). `False` is the decision; the service then calls `get_owned` to choose the decline code, which is diagnosis and not control.
 
 `close_superseded_claims` is Mechanism 3 (ADR-019): called **after** the claim and **before** the insert, in T2. It must never be folded into the insert's statement (LEARN-009).
 
@@ -110,6 +111,19 @@ The key row's `id` is the ownership token. `reclaim_if_stale` **rotates** it, so
 `release` deletes the row, guarded on `state = 'in_progress'`, and is called on every rolled-back T2 — a decline as well as a fault (ADR-020). `try_claim` translates a foreign-key violation to 401: that is where a validly signed token for a user with no row first touches the database.
 
 A retention purge is not written; see [17-future-scope.md](17-future-scope.md).
+
+### `audit_repo.py`
+
+```
+insert_batch(conn, records)                                      -> None
+list_recent(conn, *, since, before_id, status_code, …, limit)   -> list[dict]
+status_classes(conn, since)                                      -> dict[str, int]
+outcomes(conn, since, limit)                                     -> list[dict]
+routes(conn, since, limit)                                       -> list[dict]
+per_minute(conn, since)                                          -> list[dict]
+```
+
+`insert_batch` is called only by the audit writer, on its dedicated connection, never inside a request's transaction. Every read takes a `since` and is served by `ix_audit_occurred`, so no console query can scan the whole table.
 
 ### `health_repo.py`
 

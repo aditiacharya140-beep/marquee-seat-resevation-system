@@ -179,7 +179,31 @@ A lock target, not a tally. It exists so a principal's concurrent reserves seria
 
 ### `audit_log`
 
-Not created. The table's design is item 2 of [17-future-scope.md](17-future-scope.md).
+Created by revision `0002`. One row per request.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `BIGSERIAL` | PK — monotonic, and the keyset the console pages on |
+| `request_id` | `UUID` | the correlation key |
+| `occurred_at` | `TIMESTAMPTZ` | when the request arrived |
+| `method`, `path`, `route` | `TEXT` | `route` is the template, for grouping; `path` is truncated at 500 |
+| `status_code`, `duration_ms` | `INT` | |
+| `user_id` | `UUID` | nullable |
+| `is_guest` | `BOOLEAN` | nullable |
+| `outcome_code` | `TEXT` | nullable; the error code when declined |
+| `show_id` | `UUID` | nullable |
+| `seat_labels` | `TEXT[]` | nullable |
+| `idempotency_key` | `TEXT` | nullable |
+| `client_ip` | `TEXT` | nullable; text rather than `INET`, because what the proxy chain yields is not guaranteed to parse as an address |
+
+```sql
+CREATE INDEX ix_audit_occurred ON audit_log (occurred_at DESC);
+CREATE INDEX ix_audit_request  ON audit_log (request_id);
+CREATE INDEX ix_audit_outcome  ON audit_log (outcome_code, occurred_at DESC)
+    WHERE outcome_code IS NOT NULL;
+```
+
+No foreign keys: a check per insert would add contention for nothing, and a row naming a deleted user is still evidence. Written only by the batched writer, never inside a request's transaction. Every read is bounded by a time window and a row limit. Nothing purges it; partitioning by `occurred_at` with a retention window is the growth plan.
 
 ## The effective-status expressions
 
@@ -255,4 +279,4 @@ All four are config values. Isolation level is the default `READ COMMITTED` — 
 
 ## Migrations
 
-Alembic, forward-only. **One revision exists**, `0001`, carrying every table above; it runs in the container entrypoint before the server starts, and its failure fails the boot. Going forward: one migration per schema change, reviewed as code. Every migration is tested against a populated database before deploy. Constraints and indexes are part of the migration, never applied by hand — an index that exists only in production is a defect waiting for the next clean checkout. Index creation on the hot table uses `CONCURRENTLY` once the service is live.
+Alembic, forward-only. **Two revisions exist**: `0001` carries the booking tables and `0002` adds `audit_log`; they run in the container entrypoint before the server starts, and a failure fails the boot. Going forward: one migration per schema change, reviewed as code. Every migration is tested against a populated database before deploy. Constraints and indexes are part of the migration, never applied by hand — an index that exists only in production is a defect waiting for the next clean checkout. Index creation on the hot table uses `CONCURRENTLY` once the service is live.
