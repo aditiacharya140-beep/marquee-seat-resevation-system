@@ -14,6 +14,20 @@ class Credentials(BaseModel):
     password: str = Field(min_length=settings.password_min_length, max_length=PASSWORD_MAX_LENGTH)
 
 
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=1)
+
+
+class AccessTokenResponse(BaseModel):
+    access_token: str
+    token_type: str = TOKEN_TYPE_BEARER
+    expires_in: int
+
+    @classmethod
+    def of(cls, session: AuthSession) -> "AccessTokenResponse":
+        return cls(access_token=session.access_token, expires_in=session.expires_in)
+
+
 class UserResponse(BaseModel):
     user_id: UUID
     email: str | None
@@ -31,6 +45,7 @@ class TokenResponse(BaseModel):
     role: Role
     is_guest: bool
     access_token: str
+    refresh_token: str | None = None
     token_type: str = TOKEN_TYPE_BEARER
     expires_in: int
 
@@ -42,5 +57,6 @@ class TokenResponse(BaseModel):
             role=session.user.role,
             is_guest=session.user.is_guest,
             access_token=session.access_token,
+            refresh_token=session.refresh_token,
             expires_in=session.expires_in,
         )

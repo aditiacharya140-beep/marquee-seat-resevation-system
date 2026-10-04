@@ -4,10 +4,13 @@ import asyncio
 import time
 
 from app.core.config import settings
-from app.core.constants import NOT_READY_STATUS, READY_STATUS
+from app.core.constants import NOT_READY_STATUS, READY_STATUS, LogEvent
+from app.core.logging import get_logger
 from app.db.session import acquire
 from app.repositories import health_repo
 from app.schemas.common import DependencyCheck, ReadinessResponse
+
+logger = get_logger(__name__)
 
 
 async def check_readiness() -> ReadinessResponse:
@@ -20,6 +23,7 @@ async def check_readiness() -> ReadinessResponse:
         # The class name of the root cause, never its message: a driver error
         # routinely carries the DSN it failed to connect with.
         cause = exc.__cause__ or exc
+        logger.warning(LogEvent.READINESS_CHECK_FAILED, extra={"dependency": "database"})
         return ReadinessResponse(
             status=NOT_READY_STATUS,
             checks={"database": DependencyCheck(ok=False, error=type(cause).__name__)},

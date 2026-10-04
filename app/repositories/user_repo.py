@@ -53,6 +53,31 @@ async def create_guest(conn: asyncpg.Connection) -> User:
     return _user(row)
 
 
+async def upgrade_guest(
+    conn: asyncpg.Connection, user_id: object, email: str, password_hash: str
+) -> User | None:
+    """One guarded UPDATE sets all three columns, so a half-upgraded row is never
+    written and two concurrent upgrades have one winner. The id is unchanged, so every
+    reservation the guest made stays theirs. `None` means the row was not a guest."""
+    try:
+        row = await conn.fetchrow(
+            """
+            UPDATE users
+               SET email = $2, password_hash = $3, is_guest = false,
+                   updated_at = now(), request_id = $4
+             WHERE id = $1 AND is_guest = true
+            RETURNING id, email, role, is_guest, password_hash
+            """,
+            user_id,
+            email,
+            password_hash,
+            current_request_id(),
+        )
+    except asyncpg.UniqueViolationError:
+        raise ConflictError(ErrorCode.EMAIL_TAKEN) from None
+    return _user(row) if row else None
+
+
 async def get_by_email(conn: asyncpg.Connection, email: str) -> User | None:
     row = await conn.fetchrow(
         """

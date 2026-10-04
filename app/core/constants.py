@@ -66,6 +66,8 @@ class LogEvent(StrEnum):
     APP_ERROR = "app_error"
     VALIDATION_FAILED = "validation_failed"
     UNHANDLED_EXCEPTION = "unhandled_exception"
+    UNHANDLED_HTTP_EXCEPTION = "unhandled_http_exception"
+    READINESS_CHECK_FAILED = "readiness_check_failed"
     RESERVATION_CREATED = "reservation_created"
     RESERVATION_CANCELLED = "reservation_cancelled"
     RESERVATION_CONFIRMED = "reservation_confirmed"
@@ -79,6 +81,7 @@ class LogEvent(StrEnum):
 
 JWT_ALGORITHM: Final = "HS256"
 TOKEN_TYPE_ACCESS: Final = "access"  # noqa: S105 - a claim value, not a credential
+TOKEN_TYPE_REFRESH: Final = "refresh"  # noqa: S105
 TOKEN_TYPE_BEARER: Final = "bearer"  # noqa: S105
 #: Shape only. Deliverability is not something a pattern can establish.
 EMAIL_PATTERN: Final = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"

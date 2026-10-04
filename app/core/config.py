@@ -70,8 +70,7 @@ class Settings(BaseSettings):
     default_currency: str
 
     jwt_secret: SecretStr = Field(validation_alias="JWT_SECRET", min_length=32)
-    #: A day, because there is no refresh flow: the token is the whole session.
-    access_token_ttl_seconds: int = 86400
+    access_token_ttl_seconds: int = 900
     refresh_token_ttl_seconds: int = 604800
     guest_token_ttl_seconds: int = 3600
     admin_email: str = Field(validation_alias="ADMIN_EMAIL", min_length=1)
@@ -84,6 +83,8 @@ class Settings(BaseSettings):
     max_hold_ttl_seconds: int = 900
     max_seats_per_show: int = 5000
     max_seat_label_length: int = 16
+    page_size_default: int = 20
+    page_size_max: int = 100
 
     rate_limit_enabled: bool = True
     rate_limit_reserve: str = "120/10s"

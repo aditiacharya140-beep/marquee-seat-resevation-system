@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 import asyncpg
@@ -117,6 +118,40 @@ async def get_owned(
         user_id,
     )
     return _reservation(row, row["effective_status"], list(row["labels"])) if row else None
+
+
+async def list_for_user(
+    conn: asyncpg.Connection,
+    user_id: UUID,
+    *,
+    show_id: UUID | None,
+    status: str | None,
+    after: tuple[datetime, UUID] | None,
+    limit: int,
+) -> list[Reservation]:
+    """Owner-scoped by construction. `status` filters on the effective status, so a
+    lapsed hold is found under `expired` and never under `held`."""
+    rows = await conn.fetch(
+        f"""
+        SELECT {_COLUMNS}, {RESERVATION_EFFECTIVE_STATUS} AS effective_status,
+               ARRAY(SELECT label FROM reservation_seats
+                      WHERE reservation_id = reservations.id ORDER BY label) AS labels
+          FROM reservations
+         WHERE user_id = $1
+           AND ($2::uuid IS NULL OR show_id = $2)
+           AND ($3::text IS NULL OR {RESERVATION_EFFECTIVE_STATUS} = $3)
+           AND ($4::timestamptz IS NULL OR (created_at, id) < ($4::timestamptz, $5::uuid))
+         ORDER BY created_at DESC, id DESC
+         LIMIT $6
+        """,
+        user_id,
+        show_id,
+        status,
+        after[0] if after else None,
+        after[1] if after else None,
+        limit,
+    )
+    return [_reservation(row, row["effective_status"], list(row["labels"])) for row in rows]
 
 
 async def cancel_owned(conn: asyncpg.Connection, reservation_id: UUID, user_id: UUID) -> bool:

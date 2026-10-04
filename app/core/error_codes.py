@@ -19,6 +19,8 @@ class ErrorCode(StrEnum):
     SHOW_NOT_FOUND = "SHOW_NOT_FOUND"
     SEAT_NOT_FOUND = "SEAT_NOT_FOUND"
     RESERVATION_NOT_FOUND = "RESERVATION_NOT_FOUND"
+    ROUTE_NOT_FOUND = "ROUTE_NOT_FOUND"
+    METHOD_NOT_ALLOWED = "METHOD_NOT_ALLOWED"
     SEAT_TAKEN = "SEAT_TAKEN"
     PER_USER_LIMIT = "PER_USER_LIMIT"
     EMAIL_TAKEN = "EMAIL_TAKEN"
@@ -56,6 +58,8 @@ REGISTRY: Final[dict[ErrorCode, CodeSpec]] = {
     ErrorCode.RESERVATION_NOT_FOUND: CodeSpec(
         404, "Reservation not found", LogLevel.INFO, False
     ),
+    ErrorCode.ROUTE_NOT_FOUND: CodeSpec(404, "No such route", LogLevel.INFO, False),
+    ErrorCode.METHOD_NOT_ALLOWED: CodeSpec(405, "Method not allowed", LogLevel.INFO, False),
     ErrorCode.SEAT_TAKEN: CodeSpec(
         409, "One or more seats are no longer available", LogLevel.INFO, False
     ),

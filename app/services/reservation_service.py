@@ -27,7 +27,8 @@ from app.core.error_codes import REGISTRY, ErrorCode
 from app.core.errors import AppError, ConflictError, NotFoundError, ValidationError
 from app.core.logging import get_logger
 from app.db.session import acquire, transaction
-from app.domain.models import Principal, Reservation, ReserveOutcome, Show
+from app.domain.models import Page, Principal, Reservation, ReserveOutcome, Show
+from app.helpers.pagination import page_of, parse_cursor
 from app.repositories import idempotency_repo, reservation_repo, seat_repo, show_repo
 from app.schemas.reservations import ReservationResponse
 from app.utils.canonical_json import fingerprint
@@ -174,11 +175,15 @@ async def _resolve_duplicate(
         if key_id is not None:
             return key_id
         if time.monotonic() >= deadline:
-            raise ConflictError(
-                ErrorCode.IDEMPOTENCY_IN_PROGRESS,
-                headers={Header.RETRY_AFTER: str(settings.idempotency_retry_after_seconds)},
-            )
+            raise _in_progress()
         await asyncio.sleep(settings.idempotency_poll_interval_ms / 1000)
+
+
+def _in_progress() -> ConflictError:
+    return ConflictError(
+        ErrorCode.IDEMPOTENCY_IN_PROGRESS,
+        headers={Header.RETRY_AFTER: str(settings.idempotency_retry_after_seconds)},
+    )
 
 
 async def _claim(
@@ -193,6 +198,9 @@ async def _claim(
     try:
         # T2.
         async with transaction() as conn:
+            if not await idempotency_repo.lock_owned(conn, key_id):
+                # Taken over as stale by a duplicate. That request owns the outcome now.
+                raise _in_progress()
             await seat_repo.lock_quota(conn, principal.user_id, show.id)
             held = await seat_repo.count_active_for_user(conn, show.id, principal.user_id)
             if held + len(labels) > show.per_user_limit:
@@ -318,6 +326,27 @@ async def confirm(principal: Principal, reservation_id: UUID) -> Reservation:
 async def get(principal: Principal, reservation_id: UUID) -> Reservation:
     async with acquire() as conn:
         return await _owned(conn, reservation_id, principal.user_id)
+
+
+async def list_for_user(
+    principal: Principal,
+    *,
+    show_id: UUID | None,
+    status: ReservationStatus | None,
+    cursor: str | None,
+    limit: int,
+) -> Page[Reservation]:
+    after = parse_cursor(cursor)
+    async with acquire() as conn:
+        reservations = await reservation_repo.list_for_user(
+            conn,
+            principal.user_id,
+            show_id=show_id,
+            status=status.value if status else None,
+            after=after,
+            limit=limit + 1,
+        )
+    return page_of(reservations, limit, lambda r: (r.created_at, r.id))
 
 
 async def _owned(conn: Any, reservation_id: UUID, user_id: UUID) -> Reservation:

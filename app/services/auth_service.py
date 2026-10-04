@@ -15,7 +15,12 @@ logger = get_logger(__name__)
 
 def _session(user: User) -> AuthSession:
     token, expires_in = security.issue_access_token(user)
-    return AuthSession(user=user, access_token=token, expires_in=expires_in)
+    return AuthSession(
+        user=user,
+        access_token=token,
+        expires_in=expires_in,
+        refresh_token=None if user.is_guest else security.issue_refresh_token(user),
+    )
 
 
 async def register(email: str, password: str) -> AuthSession:
@@ -40,6 +45,28 @@ async def guest() -> AuthSession:
     async with acquire() as conn:
         user = await user_repo.create_guest(conn)
     return _session(user)
+
+
+async def upgrade(principal: Principal, email: str, password: str) -> AuthSession:
+    """Give a guest credentials, keeping its id and so everything it has reserved."""
+    if not principal.is_guest:
+        raise ConflictError(ErrorCode.ALREADY_REGISTERED)
+    password_hash = await security.hash_password(password)
+    async with acquire() as conn:
+        user = await user_repo.upgrade_guest(conn, principal.user_id, email, password_hash)
+    if user is None:
+        # A guest token that outlived its own upgrade.
+        raise ConflictError(ErrorCode.ALREADY_REGISTERED)
+    return _session(user)
+
+
+async def refresh(refresh_token: str) -> AuthSession:
+    """Stateless: the token is its own proof. The user is re-read so a role change or
+    an upgrade since the token was issued is reflected in the new access token."""
+    principal = security.verify_refresh_token(refresh_token)
+    user = await me(principal)
+    token, expires_in = security.issue_access_token(user)
+    return AuthSession(user=user, access_token=token, expires_in=expires_in)
 
 
 async def me(principal: Principal) -> User:

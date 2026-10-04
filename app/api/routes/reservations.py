@@ -1,12 +1,18 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Header, status
+from fastapi import APIRouter, Header, Query, status
 from fastapi.responses import JSONResponse
 
 from app.api.deps import CurrentUser
+from app.core.config import settings
 from app.core.constants import Header as HeaderName
-from app.schemas.reservations import ReservationResponse, ReserveRequest
+from app.core.constants import ReservationStatus
+from app.schemas.reservations import (
+    ReservationListResponse,
+    ReservationResponse,
+    ReserveRequest,
+)
 from app.services import reservation_service
 
 router = APIRouter(tags=["reservations"])
@@ -63,3 +69,17 @@ async def cancel(reservation_id: UUID, principal: CurrentUser) -> ReservationRes
 )
 async def get_reservation(reservation_id: UUID, principal: CurrentUser) -> ReservationResponse:
     return ReservationResponse.of(await reservation_service.get(principal, reservation_id))
+
+
+@router.get("/reservations", response_model=ReservationListResponse)
+async def list_reservations(
+    principal: CurrentUser,
+    show_id: UUID | None = None,
+    status: ReservationStatus | None = None,
+    cursor: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=settings.page_size_max)] = settings.page_size_default,
+) -> ReservationListResponse:
+    page = await reservation_service.list_for_user(
+        principal, show_id=show_id, status=status, cursor=cursor, limit=limit
+    )
+    return ReservationListResponse.of(page)

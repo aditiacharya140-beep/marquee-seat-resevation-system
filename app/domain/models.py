@@ -37,6 +37,8 @@ class AuthSession:
     user: User
     access_token: str
     expires_in: int
+    #: Absent for a guest: a guest session is deliberately bounded; to persist, upgrade.
+    refresh_token: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,3 +108,9 @@ class IdempotencyRecord:
 class ReserveOutcome:
     body: dict[str, Any]
     replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class Page[T]:
+    items: list[T]
+    next_cursor: str | None
