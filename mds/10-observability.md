@@ -36,10 +36,12 @@ A real `SELECT 1` on a pooled connection, bounded by `READYZ_TIMEOUT_SECONDS`.
 | `reservations_confirmed_total` | counter | — | reservations that reached `confirmed`, by a direct reserve or by confirming a hold |
 | `reservations_held_total` | counter | — | reserves that opted into a hold |
 | `reservations_declined_total` | counter | `reason` | **the headline metric**: reserve requests that created nothing |
-| `reservations_cancelled_total` | counter | — | holds released by an explicit cancel |
+| `reservations_cancelled_total` | counter | — | reservations cancelled by their owner |
 | `superseded_claims_closed_total` | counter | — | claim rows closed because a lapsed hold's seat was re-claimed (ADR-019) |
 | `rate_limited_total` | counter | `route_class` | requests refused with 429 |
 | `unhandled_exceptions_total` | counter | `route` | exceptions that reached the catch-all handler |
+| `audit_records_written_total`, `audit_records_dropped_total` | counter | — | audit rows written; rows lost to a full buffer or a failed flush |
+| `audit_queue_depth` | gauge | — | audit records buffered, at scrape time |
 | `seats_available` | gauge | `show_id` | seats a claim would succeed on right now |
 
 `reason` is the lower-cased error code — `seat_taken`, `per_user_limit`, `show_not_on_sale`, `idempotency_key_reused`, `idempotency_in_progress`, `seat_not_found`, `show_not_found`, `validation_error` — or one of four that are not codes: `lock_timeout`, `deadlock`, `active_claim_backstop`, and `idempotent_replay`. A replay is a success for the client; it is counted here because it is a reserve request that created nothing, which is what the metric measures.
@@ -81,6 +83,7 @@ Every row starts from a signal that exists today.
 | **5xx on a domain route** | `unhandled_exceptions_total` increases | A decline surfaced as a fault. Violates a hard requirement |
 | **Readiness failing** | `/readyz` 503; `readiness_check_failed` | The service cannot serve |
 | **Lock-timeout storm** | `reason="lock_timeout"` climbing | Hot-seat queues are exceeding `lock_timeout` |
+| **Audit dropping** | `audit_records_dropped_total` increases | The writer is stalled or the database is slow. Bookings are unaffected by design, so nothing else will say so |
 | **Throttling real users** | `rate_limited_total` climbing on `reserve` or `read` | A ceiling is too low for the traffic, or the proxy-hop count is wrong and clients are sharing a bucket |
 
 Deliberately **not** paging: a high rate of `seat_taken`, `per_user_limit` or `idempotent_replay`, a rising `superseded_claims_closed_total`, or high volume. Those are the service working correctly during an on-sale. An alert that fires every time the product succeeds gets muted, and a muted channel is how the real one gets missed.
@@ -95,6 +98,38 @@ Structured single-line JSON to stdout, shipped by the platform. Records are rend
 
 Three things make these logs usable: every line carries `request_id`, every `event` is a queryable identifier rather than a sentence, and declines are `info` so the error stream contains only genuine faults ([08-error-logging.md](08-error-logging.md)).
 
-## Audit
+## Audit trail
 
-There is no audit table. The design for one, and the reasons it must not be able to slow a booking, are item 2 of [17-future-scope.md](17-future-scope.md).
+One row per request in `audit_log` ([03-data-model.md](03-data-model.md)): who, which show, which seats, status, duration, outcome code, request id.
+
+```
+request ──► AuditMiddleware ──► bounded buffer ──► writer task ──► audit_log
+             append or drop                         batches, own connection
+```
+
+Each property is deliberate:
+
+- **The request path never waits.** `enqueue` appends or drops. Audit cannot add latency to a booking.
+- **A full buffer drops and counts.** Awaiting space would make audit a source of backpressure on bookings. Losing an audit row is an inconvenience; failing a booking is a defect. `audit_records_dropped_total` makes the loss visible.
+- **Batched writes on a dedicated connection**, outside the request pool.
+- **Drained on shutdown**, within a bound.
+- **No foreign keys.**
+
+Proven by a test that sizes the buffer to one, fires thirty bookings at once, and asserts all thirty succeed while twenty-nine records are dropped.
+
+Metrics: `audit_records_written_total`, `audit_records_dropped_total`, `audit_queue_depth`.
+
+## Admin console
+
+`GET /admin` serves a page; everything it shows comes from four admin-only endpoints ([06-apis.md](06-apis.md)).
+
+| Tab | Source |
+|---|---|
+| Overview | `audit_log` aggregated over a window — requests, status classes, declines by code, latency p50/p95 per route, requests per minute — plus this process's counters, pool usage and audit buffer |
+| Shows | create a show; recent shows with availability from the claim's own predicate |
+| Audit trail | `audit_log`, filtered, newest first; a request id links to its log lines |
+| Logs | the in-memory tail of this process's log lines |
+
+**The log view** is the answer to "logs access" on a platform whose own log stream is private. A handler on the log writer thread keeps the newest `LOG_BUFFER_MAX` rendered lines — the same lines that reached stdout, so already redacted. It is per process and empties on restart; the audit trail is the durable record.
+
+Latency per route lives here, from the audit trail, rather than as a Prometheus histogram on `/metrics`; the histogram is still future scope.

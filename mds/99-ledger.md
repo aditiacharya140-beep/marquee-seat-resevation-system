@@ -966,3 +966,55 @@ Completes LEARN-018, by test against the live service from one machine:
 **Choice** `app/static/` holds `index.html`, `app.css` and `app.js`; `GET /` returns the page and `/static/*` its assets. No framework, no build step. Both paths are exempt from rate limiting, so loading the page spends none of the visitor's `read` allowance. A missing asset answers `ROUTE_NOT_FOUND` in the envelope (ADR-023 still holds). The plan and what was built are in `18-frontend.md`.
 
 **Consequences** One URL and one deployment; the image changes by three files. The page adds nothing to the booking logic and uses only existing endpoints. It polls `GET /shows/{id}` every four seconds per open tab, which is `read` traffic keyed by principal. Guest issuance and sign-in are limited per client address, so the page depends on `RATE_LIMIT_TRUSTED_PROXY_HOPS` being right on Render; it is, as of LEARN-019.
+
+## ADR-040 — Cancel releases a confirmed reservation
+
+**Date** 2026-10-05
+
+**Context** ADR-022 and REQ-031 made cancel a hold-only operation: a confirmed reservation answered 409 `RESERVATION_CONFIRMED`. ADR-017 then made confirm the default outcome of a reserve. Together they meant the ordinary sequence — book a seat, cancel it — was refused. The original brief asks for a cancel after which the seat is cleanly re-bookable, and its own example reservation is `confirmed`. The handover had said to release `held` or `confirmed`; the documents were followed instead, which was the wrong authority.
+
+**Choice** `cancel_owned` matches a confirmed reservation or a live hold. `release_for_reservation` releases seats that carry this reservation's id and are active. Nothing else changes: ownership is still a `WHERE` clause, a non-owner still gets 404, a lapsed hold still answers `RESERVATION_EXPIRED`, a repeat cancel is still 200.
+
+**Why it is safe** The release is guarded on `reservation_id`. A confirmed seat cannot lapse, so it cannot have been claimed by anyone else while still naming this reservation; and after the release it names nobody, so a repeat cancel matches zero rows and cannot touch a seat's next owner. Lock order is unchanged: the reservation row, then seats ascending by label.
+
+**Consequences** Supersedes the cancel half of ADR-022 and rewrites REQ-031. There is no refund or cancellation window, because there is no payment. `RESERVATION_CONFIRMED` is removed from the registry: nothing can raise it any more.
+
+## ADR-041 — The admin account follows configuration, and the demo's is published
+
+**Date** 2026-10-05
+
+**Context** Reviewers must create a show to test anything, and the admin sign-in existed only in a private dashboard. The earlier bootstrap created an admin once and never touched it again, so the live account could not be changed by configuration either.
+
+**Choice** At every start the service upserts the admin: the account named by `ADMIN_EMAIL` exists, is an admin, and has `ADMIN_PASSWORD`. For the demo those are `admin@example.com` / `seat-admin-2026`, published in the README and the write-up.
+
+**Consequences** Anyone can act as admin on the demo: create shows, read the audit trail and logs. Bounded by what an admin can do — nothing deletes or edits, and no secret reaches a log line. An earlier admin under a different email is not demoted. This is a demo decision and is the opposite of what a real deployment needs; the write-up says so.
+
+## ADR-042 — Build the audit trail and an admin console; logs readable from it
+
+**Date** 2026-10-05
+
+**Context** The brief asks for log access, or a recording, and weights observability equally with correctness. Render's log stream is private. REQ-046 (audit) had been cut (ADR-032).
+
+**Choice** The audit trail as designed — bounded buffer, drop and count when full, batched writer on a dedicated connection, drained on shutdown — with one simplification: a `deque` checked against a maximum rather than an `asyncio.Queue`, since nothing ever awaits it. Per-request facts (who, show, seats) are noted by the code that knows them into a per-request dict, so the middleware reads no body. An admin console at `/admin` reads aggregates over the trail, the trail itself, and an in-memory tail of the process's own redacted log lines. Supersedes the audit line of ADR-032.
+
+**Consequences** Two connections are now kept back from the pool. The console's own requests are not audited. The log tail is per process and empties on restart. Latency per route is available in the console from the trail; as a Prometheus histogram it is still future scope.
+
+## LEARN-020 — The time is not in the handler
+
+**Date** 2026-10-05
+
+The audit trail measures duration at the innermost layer. Over a local burst of 580 reserves it recorded p50 5 ms and p95 6 ms for the reserve route, while the burst's clients measured p50 125 ms and p95 400 ms for the same requests; at 5,000 in flight clients saw p50 11 s.
+
+**Implication** Under load the wait is in front of the handler — connections queued on one Python process — not in the database and not on row locks. The lever is CPU and process count, not SQL. It is also why the free instance, with a fraction of a CPU, serves about 19 bookings a second however the queries are written.
+
+## ADR-037 — The web page requires an account to book; the API still accepts guests
+
+**Date** 2026-10-05
+
+**Context** The page gave every visitor a guest session and let it book. A guest is identified only by its token: one hour, no refresh token (`05-auth-and-rbac.md`), kept in the tab's session storage. So a guest's confirmed ticket became unreachable when the tab closed or the hour passed. The seat stayed sold; no one could see, show or cancel the ticket. Found by the user, using the live page.
+
+**Options** (a) Ask for a mobile number at booking. Without an OTP it is a string anyone can type, so knowing a number would be enough to read or cancel its tickets, which breaks owner-only access; with one it needs an SMS provider. (b) Give guests a refresh token. Keeps tickets on one browser only, and reverses the decision that a guest session is bounded. (c) Require an account at the moment of booking, in the page.
+
+**Choice** (c). Browsing and seat selection need no session. Book and Hold open the account dialog when signed out, keep the selection, and carry out the booking once the person has registered or signed in. The page no longer calls `POST /auth/guest` or `/auth/upgrade`.
+
+**Consequences** A ticket bought through the page is tied to an account and reachable from any device by signing in. No visitor creates a `users` row by loading the page. The API is unchanged: REQ-003 and REQ-004 still hold, and the burst and the seed script still book as guests by default. `burst.sh --accounts` books as registered accounts instead, the way a page visitor does; registration shares the `auth` ceiling with login (ten a minute per address), so at the default setting that mode suits a few dozen buyers and a full-size run needs a deeper `RATE_LIMIT_AUTH` bucket on the target. This does **not** close RISK-014 — registration costs no more than a guest did, so the per-user limit is still per free principal. An anonymous visitor's reads are now rate limited by address rather than by principal.

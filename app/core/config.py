@@ -14,9 +14,9 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from app.core.constants import DSN_REDACTED, REDACTED, LogLevel
 
-#: Kept back from the pool for the migration that runs at boot and an operator's own
-#: session: a pool that could take every connection would lock both out.
-RESERVED_NON_POOL_CONNECTIONS: Final = 1
+#: Kept back from the pool: the audit writer's own connection, and one for the
+#: migration that runs at boot or an operator's session.
+RESERVED_NON_POOL_CONNECTIONS: Final = 2
 
 
 def redact_dsn(dsn: str) -> str:
@@ -100,6 +100,18 @@ class Settings(BaseSettings):
 
     gauge_max_shows: int = 50
 
+    audit_enabled: bool = True
+    audit_queue_max: int = 50000
+    audit_batch_size: int = 500
+    audit_flush_interval_ms: int = 500
+    audit_shutdown_flush_seconds: float = 5.0
+
+    admin_default_window_minutes: int = 15
+    admin_max_window_minutes: int = 1440
+    admin_default_rows: int = 100
+    admin_max_rows: int = 500
+    admin_top_n: int = 15
+
     idempotency_wait_ms: int = 2000
     idempotency_poll_interval_ms: int = 50
     idempotency_stale_seconds: int = 30
@@ -109,6 +121,7 @@ class Settings(BaseSettings):
 
     log_level: LogLevel = LogLevel.INFO
     log_queue_max: int = 10000
+    log_buffer_max: int = 2000
     service_version: str = "0.1.0"
 
     @field_validator("allowed_event_kinds", mode="before")
@@ -138,7 +151,7 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"DB_POOL_MAX ({self.db_pool_max}) exceeds the usable server ceiling "
                 f"({pool_ceiling} = DB_SERVER_MAX_CONNECTIONS "
-                f"{self.db_server_max_connections} less one kept back for migrations): "
+                f"{self.db_server_max_connections} less the audit writer's and one spare): "
                 "a pool larger than the server can serve converts queueing into refusals"
             )
 

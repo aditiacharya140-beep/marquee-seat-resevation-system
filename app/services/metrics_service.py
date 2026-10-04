@@ -13,6 +13,7 @@ from app.core.errors import DependencyError
 from app.core.logging import get_logger
 from app.db.session import acquire
 from app.repositories import show_repo
+from app.services import audit_service
 
 logger = get_logger(__name__)
 
@@ -28,4 +29,5 @@ async def render() -> bytes:
         metrics.seats_available.clear()
         for show_id, count in available.items():
             metrics.seats_available.labels(show_id=str(show_id)).set(count)
+    metrics.audit_queue_depth.set(audit_service.queue_depth())
     return generate_latest()

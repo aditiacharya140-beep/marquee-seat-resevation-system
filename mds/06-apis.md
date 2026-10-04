@@ -25,6 +25,8 @@ Every response, success or failure, carries `X-Request-ID`. Every failure uses t
 | `GET` | `/healthz` | public | yes | exempt | `health.py` |
 | `GET` | `/readyz` | public | yes | exempt | `health.py` |
 | `GET` | `/metrics` | public | yes | exempt | `metrics.py` |
+| `GET` | `/admin/overview`, `/admin/audit`, `/admin/logs`, `/admin/shows` | admin | yes | `read` | `admin.py` |
+| `GET` | `/`, `/admin`, `/static/*` | public | yes | exempt | `pages.py` — the booking page and the admin console |
 | `GET` | `/` | public | yes | exempt | `pages.py` |
 | `GET` | `/static/{file}` | public | yes | exempt | mounted in `main.py` |
 
@@ -268,9 +270,8 @@ Only a `held` reservation is confirmable through this route; a reserve with no `
 
 **200** — the reservation, as below, with `"status": "cancelled"` and `cancelled_at`.
 
-Idempotent. Releases held seats to `available` and closes their claim rows; the seats are immediately re-bookable.
+Idempotent. Works on a **confirmed** reservation and on a live hold (ADR-040). Releases the seats to `available` and closes their claim rows; the seats are immediately re-bookable, and the owner's per-user allowance is freed. A repeat cancel is 200 and changes nothing, even if someone else has since booked the seats.
 
-`409 RESERVATION_CONFIRMED` — a confirmed reservation is not cancellable through this route
 `409 RESERVATION_EXPIRED` — the hold already lapsed, so its seats are already effectively available and there is nothing to release; reporting the real state beats a successful no-op
 `404 RESERVATION_NOT_FOUND` — including when owned by another principal, so reservation ids cannot be enumerated
 
@@ -312,6 +313,19 @@ Prometheus text format. Catalogue in [10-observability.md](10-observability.md).
 ### `GET /` and `GET /static/{file}`
 
 The web page and its two assets, served from `app/static/` as they are ([18-frontend.md](18-frontend.md)). A missing asset answers `404 ROUTE_NOT_FOUND` in the envelope like any other unmatched path.
+
+### Admin — `GET /admin/*`
+
+All four require the admin role: 401 without a token, 403 for a user or guest. Every query is bounded by a time window (`window_minutes`, at most `ADMIN_MAX_WINDOW_MINUTES`) and a row limit (`limit`, at most `ADMIN_MAX_ROWS`).
+
+| Path | Returns |
+|---|---|
+| `/admin/overview?window_minutes=15` | `requests` over the window — `total`, `by_status_class`, `by_outcome`, `by_route` with `p50_ms`/`p95_ms`, `per_minute` — plus `counters` (this process's own metrics) and `system` (version, uptime, pool in use, audit buffer, whether rate limiting is on) |
+| `/admin/audit?status_code=&outcome_code=&request_id=&user_id=&show_id=&before_id=` | `items`, newest first, and `next_before_id` for the next page |
+| `/admin/logs?level=&event=&request_id=` | `items`: this process's most recent log lines, newest first |
+| `/admin/shows` | recent shows with `available` and `total_seats` |
+
+The console's own requests under `/admin` are not themselves audited, or reading the trail would fill it.
 
 ---
 

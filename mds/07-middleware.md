@@ -1,6 +1,6 @@
 # Middleware
 
-Three ASGI middlewares, all pure ASGI rather than `BaseHTTPMiddleware`: the latter runs the application in a separate task, so a `ContextVar` set inside the application — the outcome code the access log reports — would be invisible to the layers wrapping it.
+Four ASGI middlewares, all pure ASGI rather than `BaseHTTPMiddleware`: the latter runs the application in a separate task, so a `ContextVar` set inside the application — the outcome code the access log reports — would be invisible to the layers wrapping it.
 
 ## Order
 
@@ -9,6 +9,7 @@ request
   → RequestContextMiddleware     request id: adopt or mint, bind, echo
   → AccessLogMiddleware          one line per request, on the way out
   → RateLimitMiddleware          per-identity bucket by route class
+  → AuditMiddleware              one record per request, into a buffer that never blocks
   → router → Depends → handler
 ```
 
@@ -18,11 +19,12 @@ Why this order:
 
 - **Request context is first**, so every later layer — including a 429 — has a request id.
 - **The access log wraps the rate limiter**, so a throttled request still produces its line and its status. A limiter that hides its own rejections makes a throttling incident invisible.
-- **The rate limiter is innermost**, so a rejected request costs a bucket check and nothing else: no routing, no dependency resolution, no database connection.
+- **The rate limiter comes before audit and the application**, so a rejected request costs a bucket check and nothing else: no audit record, no routing, no database connection.
+- **Audit is innermost**, so it records the final status of what actually ran.
 
 Domain error handling is **not** middleware. FastAPI exception handlers render the envelope for `AppError`, `RequestValidationError`, `StarletteHTTPException` and bare `Exception` ([08-error-logging.md](08-error-logging.md)), because they have the resolved route and the raised exception.
 
-Not built, and described in [17-future-scope.md](17-future-scope.md): a metrics middleware, an audit middleware, and an exception-boundary middleware.
+Not built, and described in [17-future-scope.md](17-future-scope.md): a metrics middleware and an exception-boundary middleware.
 
 ---
 
@@ -53,6 +55,16 @@ One structured line per request, emitted on the way out:
 ```
 
 `route` is the path template, not the concrete path, so a burst against thousands of show ids groups into one series; an unmatched path is logged under the single label `unmatched`. The concrete `path` is kept for lookup. `/healthz`, `/readyz` and `/metrics` are excluded — a platform probe every few seconds would otherwise dominate the volume.
+
+## AuditMiddleware
+
+Builds one `AuditRecord` per request and hands it to `audit_service.enqueue`, which appends to a bounded in-memory buffer or — if the buffer is full — drops the record and increments `audit_records_dropped_total`. It **never awaits**: audit cannot add latency to a booking, and cannot become backpressure on one.
+
+It reads nothing from the request body. Who, which show and which seats are facts the auth dependency and the reservation service *noted* on the request as they went (`core/context.note`), held in a per-request dict that the middleware reads on the way out. The access log reads `user_id` from the same place.
+
+Not audited: `/healthz`, `/readyz`, `/metrics`, the pages' own files, the API docs, and everything under `/admin` — the console polls, and auditing its reads would fill the trail with the act of reading it.
+
+The writer is a task started in the lifespan: every `AUDIT_FLUSH_INTERVAL_MS` it drains the buffer in batches of `AUDIT_BATCH_SIZE` and inserts them on **its own connection, outside the request pool**, so a saturated pool cannot stall audit and a slow flush cannot starve requests. A failed flush is logged, counted as dropped, and the loop carries on. Shutdown drains what is left within `AUDIT_SHUTDOWN_FLUSH_SECONDS`.
 
 ## RateLimitMiddleware
 

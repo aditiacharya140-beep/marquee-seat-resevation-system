@@ -114,3 +114,21 @@ class ReserveOutcome:
 class Page[T]:
     items: list[T]
     next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class AuditRecord:
+    request_id: UUID | None
+    occurred_at: datetime
+    method: str
+    path: str
+    route: str
+    status_code: int
+    duration_ms: int
+    user_id: UUID | None
+    is_guest: bool | None
+    outcome_code: str | None
+    show_id: UUID | None
+    seat_labels: list[str] | None
+    idempotency_key: str | None
+    client_ip: str | None

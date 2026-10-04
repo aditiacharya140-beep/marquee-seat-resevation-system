@@ -30,7 +30,6 @@ class ErrorCode(StrEnum):
     SHOW_NOT_ON_SALE = "SHOW_NOT_ON_SALE"
     RESERVATION_EXPIRED = "RESERVATION_EXPIRED"
     RESERVATION_CANCELLED = "RESERVATION_CANCELLED"
-    RESERVATION_CONFIRMED = "RESERVATION_CONFIRMED"
     VALIDATION_ERROR = "VALIDATION_ERROR"
     RATE_LIMITED = "RATE_LIMITED"
     DATABASE_UNAVAILABLE = "DATABASE_UNAVAILABLE"
@@ -80,9 +79,6 @@ REGISTRY: Final[dict[ErrorCode, CodeSpec]] = {
     ErrorCode.RESERVATION_EXPIRED: CodeSpec(409, "This hold has expired", LogLevel.INFO, False),
     ErrorCode.RESERVATION_CANCELLED: CodeSpec(
         409, "This reservation was cancelled", LogLevel.INFO, False
-    ),
-    ErrorCode.RESERVATION_CONFIRMED: CodeSpec(
-        409, "This reservation is already confirmed", LogLevel.INFO, False
     ),
     ErrorCode.VALIDATION_ERROR: CodeSpec(422, "Request is not valid", LogLevel.INFO, False),
     ErrorCode.RATE_LIMITED: CodeSpec(429, "Too many requests", LogLevel.INFO, False),

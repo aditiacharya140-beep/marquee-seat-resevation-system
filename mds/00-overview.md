@@ -33,6 +33,8 @@ These are settled. Each is argued in its own document and recorded as an ADR in 
 | Framework failures | Unmatched routes and bad methods answer inside the error envelope, not Starlette's default shape (ADR-023) |
 | Guests | Real user rows flagged `is_guest`, token-derived like any principal, upgradeable |
 | Rate limiting | Per-principal wherever a token exists, per client address only for sign-in and guest creation; every ceiling env-tunable (ADR-034) |
+| Audit | One row per request through a bounded buffer that drops rather than waits, drained by a batched writer on its own connection (ADR-042) |
+| Cancel | The owner can cancel a confirmed booking or a live hold; the release is guarded on the reservation's own id (ADR-040) |
 | Key ownership | The idempotency key row's id is the ownership token: a stale takeover rotates it and the claim locks it first (ADR-033) |
 
 ## Document map
@@ -48,7 +50,7 @@ These are settled. Each is argued in its own document and recorded as an ADR in 
 | [07-middleware.md](07-middleware.md) | Chain order and rationale, request-id propagation, the access log, the rate limiter |
 | [08-error-logging.md](08-error-logging.md) | `AppError` hierarchy, the error-code registry, response envelope, structured log schema, what is logged at which level |
 | [09-repositories.md](09-repositories.md) | Repository contracts per aggregate, SQL ownership, driver-error translation, pooling, `request_id` stamping |
-| [10-observability.md](10-observability.md) | Health and readiness semantics, the metrics that are exposed, alerting from signals that exist |
+| [10-observability.md](10-observability.md) | Health and readiness, the metrics exposed, the audit trail, the admin console and its log view, alerting |
 | [11-scalability.md](11-scalability.md) | Contention model, pool sizing, horizontal scaling and what breaks first, partition behaviour, known ceilings |
 | [12-testing-and-burst.md](12-testing-and-burst.md) | Test strategy by layer, concurrency test design, burst script contract and output format |
 | [13-deployment.md](13-deployment.md) | Container build, Render topology, configuration and secrets, cold start handling, rollback, operational runbook |
@@ -60,7 +62,7 @@ These are settled. Each is argued in its own document and recorded as an ADR in 
 
 ## What this set describes
 
-Documents 02 to 13 describe the service **as it is built and deployed**. Anything designed and not built — the audit trail, part of the metric catalogue, sale windows — lives in [17-future-scope.md](17-future-scope.md) and nowhere else, so a statement in the other documents is a statement about the code (ADR-035).
+Documents 02 to 13 describe the service **as it is built and deployed**. Anything designed and not built — part of the metric catalogue, sale windows, a payment step — lives in [17-future-scope.md](17-future-scope.md) and nowhere else, so a statement in the other documents is a statement about the code (ADR-035).
 
 ## Invariants
 

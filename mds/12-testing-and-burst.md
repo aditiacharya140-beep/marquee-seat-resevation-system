@@ -6,7 +6,7 @@ The governing principle: a test that would still pass against a read-then-write 
 
 ## How the suite runs
 
-`pytest`, 316 tests, about 14 seconds. Coverage of `app/` is 96% of lines and branches (`coverage run --branch --source=app -m pytest`).
+`pytest`, 326 tests, about 16 seconds. Coverage of `app/` is 96% of lines and branches (`coverage run --branch --source=app -m pytest`).
 
 - The application is driven in-process through `httpx.ASGITransport` — the real app factory, middleware chain and handlers — against `TEST_DATABASE_URL`, never the development database.
 - The schema comes from the **real migration**, run by the same Alembic command the container entrypoint uses.
@@ -38,7 +38,9 @@ The governing principle: a test that would still pass against a read-then-write 
 | `test_shows.py` | Creation, admin-only, each validation cause, per-seat price and section, the keyset-paginated list |
 | `test_reserve.py` | Confirm-by-default and hold, the spoofed `user_id` ignored, all-or-nothing, a decline releasing its key, replay as 200, key reuse across seats and across shows, the per-user limit, each request-level rejection |
 | `test_reserve_edges.py` | A key still in progress declining after the wait bound; stale takeover reserving exactly once; a taken-over owner unable to proceed; a lock timeout on reserve, confirm and cancel being a 409; a lapsed hold reading `expired`, freeing the limit and refusing a cancel; `SHOW_NOT_ON_SALE`; request-id stamping on rows; non-owner confirm and read being 404; unstorable text being a 422; a token for a missing user being a 401 |
-| `test_lifecycle.py` | Cancel and re-book, confirm, repeat calls, a sold seat not being cancellable, a principal listing only its own reservations |
+| `test_lifecycle.py` | Cancel of a hold and of a confirmed booking, owner-only, re-booking by someone else, a repeat cancel never taking the seat back, confirm, a principal listing only its own reservations |
+| `test_admin.py` | A reserve audited with who, what and outcome; the admin endpoints refusing non-admins; a full audit buffer dropping and counting while every request succeeds; the overview's aggregates; the log view, and that no secret is in it; the admin account following configuration |
+| `test_frontend.py` | The pages and their files are served and spend no rate-limit allowance |
 | `test_metrics.py` | Counters and the gauge agreeing with the API; no unbounded label |
 | `test_rate_limit.py` | Guest creation capped per address; a forged `X-Forwarded-For` not choosing the bucket; distinct principals behind one address never throttled; exemptions; refill; route classes |
 
@@ -68,11 +70,12 @@ One round, by a separate reviewing agent executing probes against PostgreSQL (LE
 | Phase | What it does |
 |---|---|
 | Warm | Polls `/readyz` until ready, so a cold start is never measured as load |
-| Setup | Logs in as admin, creates a fresh show, mints one guest per buyer — waiting as `Retry-After` instructs if guest creation is throttled |
+| Setup | Logs in as admin, creates a fresh show, mints one guest per buyer, or with `--accounts` registers one account per buyer (ADR-037) — waiting as `Retry-After` instructs if that is throttled, and stopping if it would take longer than an access token lives |
 | Stampede | Every buyer reserves one or two random seats, while a sampler polls the invariant |
 | Hot seat | A barrier-released crowd on one seat. No connection is held while waiting on the barrier |
 | Idempotent retries | One key fired twenty times at once |
 | Limit probe | One principal fires more parallel reserves than the limit allows |
+| Identity and release | A reserve carrying another user's id in the body belongs to the token's user; that other user's cancel is 404; the owner's cancel succeeds; the seat is re-booked by someone else; a repeat cancel leaves it with its new owner |
 | Reconcile | The API's counts, the seats in 201 bodies, `/metrics` and `unhandled_exceptions_total` against each other |
 
 It prints each check, the outcome distribution by status and code, and p50/p95/p99 latency timed from when a request leaves the script's own concurrency limiter. A response that is not the service's JSON is recorded with its real status and whether the service or the platform's proxy sent it.

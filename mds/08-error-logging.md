@@ -30,7 +30,7 @@ MethodError         405   METHOD_NOT_ALLOWED
 ConflictError       409   SEAT_TAKEN, PER_USER_LIMIT, EMAIL_TAKEN,
                           IDEMPOTENCY_KEY_REUSED, IDEMPOTENCY_IN_PROGRESS,
                           SHOW_NOT_ON_SALE, RESERVATION_EXPIRED,
-                          RESERVATION_CANCELLED, RESERVATION_CONFIRMED,
+                          RESERVATION_CANCELLED,
                           ALREADY_REGISTERED
 ValidationError     422   VALIDATION_ERROR
 RateLimitError      429   RATE_LIMITED

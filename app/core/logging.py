@@ -12,6 +12,8 @@ import queue
 import re
 import sys
 import traceback
+from collections import deque
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from logging.handlers import QueueHandler, QueueListener
 from typing import Any, Final
@@ -127,6 +129,24 @@ class _DroppingQueueHandler(QueueHandler):
 
 
 _listener: QueueListener | None = None
+_recent: deque[str] = deque(maxlen=settings.log_buffer_max)
+
+
+class _RecentLinesHandler(logging.Handler):
+    """Keeps the newest rendered lines for the admin console. Fed by the listener
+    thread, so the lines are exactly what reached stdout: already redacted."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        _recent.append(record.getMessage())
+
+
+def recent_log_lines() -> Iterator[dict[str, Any]]:
+    """Newest first. Lines since this process started; a restart empties it."""
+    for line in reversed(tuple(_recent)):
+        try:
+            yield orjson.loads(line)
+        except orjson.JSONDecodeError:
+            continue
 
 
 def configure_logging() -> None:
@@ -138,7 +158,7 @@ def configure_logging() -> None:
         _listener.stop()
     records: queue.Queue[logging.LogRecord] = queue.Queue(maxsize=settings.log_queue_max)
     # The queue carries already-rendered lines, so the stream handler adds no format.
-    _listener = QueueListener(records, logging.StreamHandler(sys.stdout))
+    _listener = QueueListener(records, logging.StreamHandler(sys.stdout), _RecentLinesHandler())
     _listener.start()
     atexit.register(_listener.stop)
 

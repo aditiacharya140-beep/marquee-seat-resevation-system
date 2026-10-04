@@ -10,7 +10,7 @@ A single stateless FastAPI process in front of one PostgreSQL primary. No cache,
             ▼
    ┌─────────────────────────────┐
    │  middleware chain            │  request context → access log
-   │                              │  → rate limit
+   │                              │  → rate limit → audit
    └─────────────┬───────────────┘
                  ▼
    ┌─────────────────────────────┐
@@ -28,7 +28,7 @@ A single stateless FastAPI process in front of one PostgreSQL primary. No cache,
             PostgreSQL
 ```
 
-**There are no background workers at all.** Expiry is enforced entirely by the claim predicate (ADR-017), and the availability gauge is computed when `/metrics` is scraped. The only thread besides the event loop's own pools is the log writer.
+**One background task, and it is not near seat state.** The audit writer drains a buffer on its own connection. Expiry is enforced entirely by the claim predicate (ADR-017), and the availability gauge is computed when `/metrics` is scraped. The only thread besides the event loop's own pools is the log writer.
 
 ## Layering
 
@@ -71,12 +71,13 @@ app/
     sql.py                   the effective-status fragments, each defined once
     migrations/              Alembic env and the single revision
   middleware/
-    request_context.py  access_log.py  rate_limit.py
+    request_context.py  access_log.py  rate_limit.py  audit.py
   api/
     deps.py                  get_current_user, require_admin
     routes/
       __init__.py            router assembly
       health.py  auth.py  shows.py  reservations.py  metrics.py
+      admin.py  pages.py
   schemas/
     common.py  auth.py  shows.py  reservations.py
   domain/
@@ -84,9 +85,10 @@ app/
   services/
     health_service.py  auth_service.py  show_service.py
     reservation_service.py  metrics_service.py
+    audit_service.py  admin_service.py
   repositories/
     base.py  health_repo.py  user_repo.py  show_repo.py  seat_repo.py
-    reservation_repo.py  idempotency_repo.py
+    reservation_repo.py  idempotency_repo.py  audit_repo.py
   helpers/
     pagination.py
   utils/
@@ -102,9 +104,10 @@ The idempotency decision tree lives in `reservation_service.py` rather than a se
 1. **Request context** — accept or mint a UUID request id, bind it to a `ContextVar` and the ASGI scope, echo it on the response.
 2. **Access log** — method, path, route template, duration, status and outcome code, on the way out.
 3. **Rate limit** — a bucket per identity and route class; a 429 is still traceable because the id already exists.
-4. **Route** — `Depends` resolves the principal and role before the handler body runs.
-5. **Service** — opens the transaction, calls repositories, commits or rolls back.
-6. **Response** — a response model, or the error envelope from an exception handler.
+4. **Audit** — on the way out, one record into a buffer that never blocks.
+5. **Route** — `Depends` resolves the principal and role before the handler body runs.
+6. **Service** — opens the transaction, calls repositories, commits or rolls back.
+7. **Response** — a response model, or the error envelope from an exception handler.
 
 ## Transaction boundaries
 
@@ -151,7 +154,7 @@ No code branches on event kind. A reserved-seating concert and a screening trave
 |---|---|
 | Redis | Nothing needs it. Rate limiting is per-instance by choice; the atomic decision belongs in the database. Adding it would add a failure mode and no correctness. |
 | Message broker | Nothing is asynchronous. The audit trail, if built, is an in-process bounded queue with a drop policy. |
-| Audit trail, metrics middleware, exception boundary | Designed, not built: [17-future-scope.md](17-future-scope.md). |
+| Metrics middleware, exception boundary | Designed, not built: [17-future-scope.md](17-future-scope.md). |
 | Read replica | Reads are cheap and must be consistent with claims; a replica would introduce lag visible as an invariant violation. |
 | Payment integration | `amount_paise` is computed and recorded; capture is out of scope and the hold/confirm split is where it would attach. |
 | UI | One static page served by this service; no build step, no second deployment ([18-frontend.md](18-frontend.md), ADR-036). |

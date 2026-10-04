@@ -25,6 +25,7 @@ from app.core.constants import (
     ReservationStatus,
     ShowStatus,
 )
+from app.core.context import note
 from app.core.error_codes import REGISTRY, ErrorCode
 from app.core.errors import AppError, ConflictError, NotFoundError, ValidationError
 from app.core.logging import get_logger
@@ -47,6 +48,7 @@ async def reserve(
     body_key: str | None,
     hold_ttl_seconds: int | None,
 ) -> ReserveOutcome:
+    note(show_id=str(show_id), seat_labels=sorted(labels), idempotency_key=header_key or body_key)
     try:
         outcome = await _reserve(
             principal, show_id, sorted(labels), _resolve_key(header_key, body_key), hold_ttl_seconds
@@ -300,8 +302,9 @@ def _body(reservation: Reservation) -> dict[str, Any]:
 
 
 async def cancel(principal: Principal, reservation_id: UUID) -> Reservation:
-    """Release a live hold. Locks its own reservation row, then seats in label order,
-    then claim rows for seats already locked — the tiers of the deadlock argument."""
+    """Release a reservation its owner no longer wants: a live hold, or a confirmed
+    booking. Locks its own reservation row, then seats in label order, then claim rows
+    for seats already locked — the tiers of the deadlock argument."""
     async with transaction() as conn:
         decided = await reservation_repo.cancel_owned(conn, reservation_id, principal.user_id)
         if decided:
@@ -374,7 +377,6 @@ def _require_every_seat(reservation: Reservation, affected: list[str]) -> None:
 
 _DECLINE_BY_STATUS = {
     ReservationStatus.CANCELLED: ErrorCode.RESERVATION_CANCELLED,
-    ReservationStatus.CONFIRMED: ErrorCode.RESERVATION_CONFIRMED,
     ReservationStatus.EXPIRED: ErrorCode.RESERVATION_EXPIRED,
 }
 

@@ -6,6 +6,7 @@ from fastapi import Depends, Header
 
 from app.core import errors, security
 from app.core.constants import TOKEN_TYPE_BEARER, Role
+from app.core.context import note
 from app.core.error_codes import ErrorCode
 from app.domain.models import Principal
 
@@ -16,7 +17,9 @@ async def get_current_user(
     scheme, _, token = (authorization or "").partition(" ")
     if scheme.lower() != TOKEN_TYPE_BEARER or not token.strip():
         raise errors.AuthError(ErrorCode.UNAUTHENTICATED)
-    return security.verify_access_token(token.strip())
+    principal = security.verify_access_token(token.strip())
+    note(user_id=str(principal.user_id), is_guest=principal.is_guest)
+    return principal
 
 
 CurrentUser = Annotated[Principal, Depends(get_current_user)]

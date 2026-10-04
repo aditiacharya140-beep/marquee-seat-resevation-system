@@ -86,6 +86,8 @@ class LogEvent(StrEnum):
     CLAIM_DEADLOCK = "claim_deadlock"
     IDEMPOTENCY_RELEASE_FAILED = "idempotency_release_failed"
     METRICS_GAUGE_UNAVAILABLE = "metrics_gauge_unavailable"
+    AUDIT_FLUSH_FAILED = "audit_flush_failed"
+    AUDIT_SHUTDOWN_FLUSH_INCOMPLETE = "audit_shutdown_flush_incomplete"
     ADMIN_BOOTSTRAPPED = "admin_bootstrapped"
     ADMIN_BOOTSTRAP_SKIPPED = "admin_bootstrap_skipped"
 
@@ -134,6 +136,20 @@ UNMATCHED_ROUTE_LABEL: Final = "unmatched"
 #: visitor's read allowance, so the rate limiter passes both through.
 INDEX_PATH: Final = "/"
 STATIC_URL_PREFIX: Final = "/static"
+ADMIN_PAGE_PATH: Final = "/admin"
+
+#: Not audited: probes, the pages' own files, and the admin console's polling, which
+#: would otherwise fill the trail with the act of reading it.
+AUDIT_EXEMPT_PREFIXES: Final = (
+    "/healthz",
+    "/readyz",
+    "/metrics",
+    "/static/",
+    "/admin",
+    "/docs",
+    "/openapi.json",
+)
+AUDIT_MAX_PATH_LENGTH: Final = 500
 STATIC_DIR: Final = Path(__file__).resolve().parents[1] / "static"
 
 REDACTED: Final = "[redacted]"

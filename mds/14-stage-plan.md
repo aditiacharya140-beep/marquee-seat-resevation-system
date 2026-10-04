@@ -26,10 +26,10 @@ A stage closes only when all five hold:
 | 3 Shows and seats | yes | yes | no | No way to take a show off sale; sale windows unused |
 | 4 The atomic claim | yes | yes | **yes** | Negative controls are not automated |
 | 5 Lifecycle | yes | yes | partly, with stage 4 | No permanent test for a cancel racing a claim at the expiry boundary |
-| 6 Observability | partly | yes | no | Rate limiting built; audit not built; only part of the metric catalogue exposed |
+| 6 Observability | yes | yes | no | Rate limiting, the audit trail and an admin console are built. The HTTP latency histogram and pool gauges are not on `/metrics` |
 | 7 Burst and hardening | partly | — | no | Passed live at the script's default size (400 buyers, 150 on a hot seat), not at the 20,000 the design is sized for; no spoof or lifecycle phase |
 | 8 Documentation | yes | — | — | No clean-clone verification; CI has never run |
-| 9 Monitoring view | no | — | — | Depends on audit |
+| 9 Monitoring view | yes | through its API | no | The admin console. Not checked across browsers |
 
 Everything in the right-hand column is described in [17-future-scope.md](17-future-scope.md).
 
@@ -56,12 +56,12 @@ The effective-status expressions, defined once. `POST /shows` with all seats in 
 **Covers:** REQ-020 – REQ-029, REQ-060.
 
 ### Stage 5 — Lifecycle
-`confirm` and `cancel` as guarded updates, owner-only by `WHERE` clause. Reservation reads with effective status. No sweeper (ADR-017).
+`confirm` and `cancel` as guarded updates, owner-only by `WHERE` clause; cancel works on a confirmed booking as well as a hold (ADR-040). Reservation reads with effective status. No sweeper (ADR-017).
 **Covers:** REQ-030 – REQ-036.
 
 ### Stage 6 — Observability
-Domain counters inline in services; the availability gauge at scrape time; `RateLimitMiddleware`. Audit is future scope.
-**Covers:** REQ-042 (partly), REQ-043, REQ-047. REQ-046 is not met.
+Domain counters inline in services; the availability gauge at scrape time; `RateLimitMiddleware`; the audit trail with a buffer that never blocks; the in-memory log tail.
+**Covers:** REQ-042 (partly), REQ-043, REQ-046, REQ-047.
 
 ### Stage 7 — Burst and hardening
 `burst/burst.py` and `burst.sh`, run against the live URL.
@@ -71,7 +71,7 @@ Domain counters inline in services; the availability gauge at scrape time; `Rate
 `README.md`, `WRITEUP.md`, and this set brought into line with the code (ADR-035).
 
 ### Stage 9 — Monitoring view
-Not started; optional; depends on audit.
+The admin console at `/admin`: overview, shows, audit trail, logs.
 
 ### Stage 10 — Web page
 Built ([18-frontend.md](18-frontend.md), ADR-036): three static files in `app/static/`, served at `/` and `/static/*`, exempt from rate limiting. `tests/integration/test_frontend.py` covers the serving; the page's behaviour was walked through in a real browser against a local database, not by an automated suite. Not adversarially reviewed.
@@ -82,7 +82,7 @@ Built ([18-frontend.md](18-frontend.md), ADR-036): three static files in `app/st
 2. Review the unreviewed stages — auth, shows, the rate limiter — with the same adversarial pass the claim path had.
 3. Decide how a principal earns the right to reserve (item 1 of future scope). It is the only known weakness with a product consequence.
 4. Run the burst well beyond its default size against the live URL; the free instance is the limit, not the script.
-5. Audit, then the missing metrics.
+5. The missing metrics on `/metrics`, and a retention policy for the audit table.
 
 ## Local environment
 
