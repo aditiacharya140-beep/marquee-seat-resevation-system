@@ -35,6 +35,11 @@ superseded_claims_closed_total = Counter(
     "Claim rows closed because a lapsed hold's seat was re-claimed (ADR-019)",
 )
 
+rate_limited_total = Counter(
+    "rate_limited_total",
+    "Requests refused with 429, by route class",
+    ["route_class"],
+)
 seats_available = Gauge(
     "seats_available",
     "Seats a claim would succeed on right now, computed at scrape time",

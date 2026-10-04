@@ -75,6 +75,9 @@ os.environ["DATABASE_URL"] = os.environ.get("TEST_DATABASE_URL") or _DECLARED["T
 # A pool is opened per test (each test has its own event loop); one warm connection
 # keeps that cheap, and the pool still grows to DB_POOL_MAX under a concurrency test.
 os.environ["DB_POOL_MIN"] = "1"
+# Every test client shares one address, so the limiter would throttle the suite
+# itself. tests/integration/test_rate_limit.py switches it on for its own tests.
+os.environ["RATE_LIMIT_ENABLED"] = "false"
 
 import httpx  # noqa: E402  - must follow the environment bootstrap above
 import pytest  # noqa: E402

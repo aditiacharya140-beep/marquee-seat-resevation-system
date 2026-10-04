@@ -209,7 +209,7 @@ Every monetary value is an integer count of paise, stored as `BIGINT`, transport
 | REQ-042 metrics | `tests/integration/test_metrics.py` | **partial** — no latency histogram, `db_pool_waiting`, `seat_claim_lock_wait_seconds` or audit series |
 | REQ-043 metrics reconcile | `test_metrics.py`, `burst/` | covered |
 | REQ-046 audit | — | **not built** (ADR-032) |
-| REQ-047 rate limiting | — | **not built** (ADR-032) |
+| REQ-047 rate limiting | `tests/integration/test_rate_limit.py` | covered; `auth` is keyed by address only, not address and email (ADR-034) |
 | REQ-048 no 5xx | `test_reserve_edges.py::test_a_lock_timeout_is_a_409_never_a_500`, race tests, `burst/` | covered for lock timeout; deadlock and backstop translation are not injected by a test |
 | REQ-049 cold start | `burst/` warms `/readyz` before measuring | covered by the script; cold-start time is not measured |
 | REQ-050 clean checkout | `docker compose up --build`, run locally | **partial** — the CI container job has never run |

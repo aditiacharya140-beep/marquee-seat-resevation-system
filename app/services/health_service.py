@@ -26,10 +26,12 @@ async def check_readiness() -> ReadinessResponse:
         logger.warning(LogEvent.READINESS_CHECK_FAILED, extra={"dependency": "database"})
         return ReadinessResponse(
             status=NOT_READY_STATUS,
+            rate_limit_enabled=settings.rate_limit_enabled,
             checks={"database": DependencyCheck(ok=False, error=type(cause).__name__)},
         )
     latency_ms = round((time.perf_counter() - started) * 1000, 2)
     return ReadinessResponse(
         status=READY_STATUS,
+        rate_limit_enabled=settings.rate_limit_enabled,
         checks={"database": DependencyCheck(ok=True, latency_ms=latency_ms)},
     )

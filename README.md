@@ -38,6 +38,10 @@ per-user limit with parallel requests, then reconciles the API, the `201` bodies
 `/metrics` against each other. It prints the outcome distribution by reason and
 **exits non-zero on any invariant violation**.
 
+Guest creation is rate limited per address, and the burst mints one guest per buyer.
+If it needs more than the bucket holds it says so and waits as `Retry-After`
+instructs — it has not hung.
+
 ## Quickstart
 
 ```bash
@@ -96,6 +100,10 @@ Interactive docs at `/docs`.
   refresh token from register or login for a new one. Guests get no refresh token.
 - **Lists** are keyset-paginated: pass the `next_cursor` from one page as `cursor` for
   the next; `null` means there are no more.
+- **Rate limits** are per signed-in user, so a crowd behind one address is never
+  throttled as one. Only sign-in and guest creation are limited per address. A `429`
+  carries `Retry-After`; ceilings are the `RATE_LIMIT_*` variables, and
+  `RATE_LIMIT_ENABLED=false` switches limiting off (reported on `/readyz`).
 - **Errors** share one envelope: `{"error": {"code", "message", "details", "request_id"}}`.
   Every response carries `X-Request-ID`, and every row written is stamped with it.
 

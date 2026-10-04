@@ -39,6 +39,10 @@ services:
       ALLOWED_EVENT_KINDS: cinema,concert
       DEFAULT_EVENT_KIND: cinema
       DEFAULT_CURRENCY: INR
+      # A deeper guest bucket so `burst.sh` can mint its principals from one address,
+      # and no proxy in front, so the socket peer is the client.
+      RATE_LIMIT_GUEST: 600/600s
+      RATE_LIMIT_TRUSTED_PROXY_HOPS: "0"
     # Container side is the image's PORT default; 8080 on the host leaves 8000 free
     # for `make run`.
     ports:

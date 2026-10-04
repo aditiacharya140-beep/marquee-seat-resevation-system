@@ -17,4 +17,6 @@ class DependencyCheck(BaseModel):
 
 class ReadinessResponse(BaseModel):
     status: str
+    #: Reported so a service running with limiting switched off cannot do so unnoticed.
+    rate_limit_enabled: bool
     checks: dict[str, DependencyCheck]

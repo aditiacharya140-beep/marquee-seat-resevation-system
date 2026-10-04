@@ -39,6 +39,16 @@ class Role(StrEnum):
     USER = "user"
 
 
+class RouteClass(StrEnum):
+    """Rate-limit classes. Each has a `RATE_LIMIT_<CLASS>` ceiling in configuration."""
+
+    RESERVE = "reserve"
+    READ = "read"
+    AUTH = "auth"
+    GUEST = "guest"
+    ADMIN = "admin"
+
+
 class LogLevel(StrEnum):
     DEBUG = "debug"
     INFO = "info"
