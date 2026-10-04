@@ -36,7 +36,7 @@ JWT, HS256, signed with a secret from configuration. Access tokens are short-liv
 
 Verification rejects, in this order: missing or malformed header, bad signature, wrong issuer, wrong `typ`, expired. Every failure is 401 `UNAUTHENTICATED` with no detail about which check failed.
 
-**Guest token lifetime must exceed `hold_ttl_seconds`** plus a margin, or a guest's token expires before they can confirm the hold they just took. This is validated at startup against config and fails the boot rather than producing a confusing runtime failure.
+**Guest token lifetime must exceed `MAX_HOLD_TTL_SECONDS`**, or a guest's token expires before they can confirm the longest hold the service will issue. Validated at startup, failing the boot rather than producing a confusing runtime failure (ADR-031). It is a *necessary* bound, not a guarantee: a token minted shortly before a maximum-length hold can still lapse first, which is RISK-006. Since ADR-017 a reserve confirms by default, so only a guest that deliberately opts into a hold can meet this at all, and the cost is one retry with no seat lost.
 
 ## Passwords
 
@@ -144,4 +144,4 @@ At startup, if a configured admin email is set and no admin exists, one is creat
 | Secret in an image or log | Secret only from the environment; never logged, never in a response, never in a repository |
 | Algorithm confusion | Decoder pinned to a single algorithm; `none` and asymmetric variants rejected |
 | Privilege escalation via body | No identity or role field exists on any authenticated request model |
-| Hold hijack after expiry | Confirm is predicated on `status='held' AND reservation_id=$id`, so a lapsed-and-reclaimed seat cannot be confirmed by its former holder |
+| Hold hijack after expiry | Confirm is predicated on the owner, `status='held'` **and `hold_expires_at > now()`** (ADR-022), so a lapsed hold cannot be confirmed by its former holder whether or not its seat has been re-claimed. The earlier form relied on `reservation_id` having moved on, which is true only for a seat someone else actually took — a merely lapsed hold would still have matched |

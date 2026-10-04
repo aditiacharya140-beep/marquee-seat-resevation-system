@@ -16,13 +16,15 @@ Given an unused email and a password meeting policy, when `POST /auth/register` 
 Given valid credentials, when `POST /auth/login` is called, then an access and a refresh token are returned. Invalid credentials return 401 `INVALID_CREDENTIALS` with the same latency and message whether the email exists or not.
 
 **REQ-003** `M` `guest` — Obtain a guest identity.
-When `POST /auth/guest` is called with no credentials, then a user row is created with `is_guest=true`, role `user`, and a short-lived access token is returned. A guest may reserve, confirm, cancel, and read its own reservations exactly as a registered user.
+When `POST /auth/guest` is called with no credentials, then a user row is created with `is_guest=true`, role `user`, and a short-lived access token is returned. A guest may reserve, confirm, cancel, and read its own reservations exactly as a registered user. Startup refuses to boot unless `GUEST_TOKEN_TTL_SECONDS > MAX_HOLD_TTL_SECONDS`, so no configuration can exist in which a guest's token always expires before the longest permitted hold (ADR-031; the residual per-request case is RISK-006).
 
 **REQ-004** `M` `guest` — Upgrade a guest to a registered account.
 Given a valid guest token and an unused email, when `POST /auth/upgrade` is called, then the **same** `user_id` gains credentials and `is_guest` becomes false, and every reservation already held by that id remains attached to it. A non-guest token returns 409 `ALREADY_REGISTERED`.
 
 **REQ-005** `M` `user` — Identity is token-derived.
-When any authenticated request includes a `user_id` in its body or query, then that value has no effect on the acting principal; the token subject is used. Verified by issuing a request whose body names another principal and asserting the created resource belongs to the token's subject.
+When any authenticated request includes a `user_id` in its body or query, then that value has no effect on the acting principal; the token subject is used. Verified by issuing a request whose body names another principal and asserting the created resource **is created** and belongs to the token's subject — a 422 would not demonstrate the property, because the request must act in order to show whom it acted as.
+
+The guarantee is structural, not a validation rule: no request model anywhere declares an identity field, so there is nothing for a body value to bind to. It therefore survives any change to the unknown-field policy of ADR-028, under which non-admin endpoints ignore unknown fields and admin endpoints reject them.
 
 **REQ-006** `M` `user` — Reject invalid tokens.
 A missing, malformed, expired, or wrongly signed token returns 401 `UNAUTHENTICATED`. No route that requires a principal executes any business logic before this check.
@@ -57,10 +59,21 @@ At every instant, including during a burst, `available + held + confirmed == tot
 ## Reservation
 
 **REQ-020** `M` `user` — Reserve seats.
-Given a show and one or more free seat labels and an idempotency key, when `POST /shows/{id}/reserve` is called, then a reservation is created in status `held` with `hold_expires_at`, the named seats become `held` for the principal, and 201 is returned with `reservation_id`, `show_id`, `user_id`, `seats`, `amount_paise`, `status`, and `expires_at`. `amount_paise` is an integer sum of the seats' prices.
+Given a show and one or more free seat labels and an idempotency key, when `POST /shows/{id}/reserve` is called, then 201 is returned with `reservation_id`, `show_id`, `user_id`, `seats`, `amount_paise`, `currency`, `status`, `created_at`, and `expires_at` where applicable. `amount_paise` is an integer sum of the seats' prices.
+
+Two outcomes, selected by one optional field (ADR-017):
+
+| Request | Reservation | Seats | Response |
+|---|---|---|---|
+| no `hold_ttl_seconds` | `confirmed`, `confirmed_at` set, no expiry | `confirmed` | 201, `status: "confirmed"`, no `expires_at` |
+| `hold_ttl_seconds` present | `held`, `hold_expires_at` set | `held` | 201, `status: "held"`, `expires_at` set |
+
+Confirming is the default and the primary path. A `hold_ttl_seconds` above the show's maximum is **clamped silently** to that maximum, not rejected, and the response's `expires_at` reports the value actually applied.
 
 **REQ-021** `M` `user` — No double-sell.
 A seat active for one principal can never become active for another. Given N concurrent reserves for the same single seat, exactly one returns 201 and the other N−1 return 409 `SEAT_TAKEN`; zero return 5xx; exactly one database row records ownership.
+
+Measured as a count of 201s, which is only meaningful because two design decisions keep other outcomes out of that count: a reserve confirms by default, so no lapsed hold can hand a legitimate second 201 for the same seat within one run (ADR-017), and a replay answers 200, so a retry is never counted as a claim (ADR-029).
 
 **REQ-022** `M` `user` — All-or-nothing multi-seat.
 Given a request for multiple labels where at least one is unavailable, then 409 `SEAT_TAKEN` is returned with the conflicting labels in `details.conflicts`, and **no** requested seat changes state. Holds under concurrency: a request that loses a race on its second seat must not leave its first seat held.
@@ -69,13 +82,17 @@ Given a request for multiple labels where at least one is unavailable, then 409 
 A principal may not hold or own more than the show's `per_user_limit` seats (default 4). A request that would exceed it returns 409 `PER_USER_LIMIT` and claims nothing. Holds under concurrency: ten parallel single-seat reserves against a limit of four end with exactly four held.
 
 **REQ-024** `M` `user` — Idempotent reserve.
-A repeated request with the same idempotency key returns the original reservation with the original status code and body, flagged as a replay, and creates no additional reservation and no additional seat movement.
+A repeated request with the same idempotency key and the same canonical request returns the original reservation's body with status **200** and the header `Idempotent-Replay: true`, and creates no additional reservation and no additional seat movement. A replay is never 201: a retry must not be countable as a second creation, since exactly-one-201-per-contested-seat is measured by counting status codes (ADR-029).
 
-**REQ-025** `M` `user` — Key reuse with a different body.
-The same idempotency key presented with a different canonical request body returns 409 `IDEMPOTENCY_KEY_REUSED`, checked before any seat is touched. Canonicalization makes key order and whitespace irrelevant.
+Only successes are stored under a key. A request whose outcome was a domain decline **releases** the key, so a later retry with that key genuinely re-attempts and may legitimately succeed (ADR-020). A key therefore produces at most one reservation, which is the property "reserves exactly once" states; it does not produce a frozen decline.
+
+**REQ-025** `M` `user` — Key reuse with a different request.
+The same idempotency key presented with a different canonical request returns 409 `IDEMPOTENCY_KEY_REUSED`, checked before any seat is touched. Canonicalization makes JSON key order and whitespace irrelevant, and seat-label order and duplication irrelevant.
+
+The fingerprint covers exactly: the operation name, the **show id taken from the path**, the sorted de-duplicated seat labels, and `hold_ttl_seconds` when present (omitted entirely when absent, since "no TTL" and "TTL 120" are different operations). So the same key against a **different show** is 409 `IDEMPOTENCY_KEY_REUSED`, not a second reservation and not a wrong replay (ADR-021).
 
 **REQ-026** `M` `user` — Concurrent duplicate keys.
-Two concurrent requests bearing the same key produce exactly one reservation. The loser waits a bounded interval and returns the winner's result; if the winner has not completed within that bound, 409 `IDEMPOTENCY_IN_PROGRESS` is returned and no second reservation exists.
+Two concurrent requests bearing the same key produce **at most one** reservation. The loser waits a bounded interval, holding no database connection between polls (ADR-026), and then: replays the winner's result as 200 if the winner succeeded; re-attempts once if the winner declined and released the key; or returns 409 `IDEMPOTENCY_IN_PROGRESS` with `Retry-After` if the winner has not finished within the bound. In no interleaving do two different `reservation_id` values come back for one key.
 
 **REQ-027** `M` `user` — Missing or malformed idempotency key.
 A reserve without a key, or with one exceeding the configured length, returns 422 `VALIDATION_ERROR`. The key is accepted from the `Idempotency-Key` header or the request body; if both are present and differ, 422.
@@ -91,19 +108,25 @@ A reserve on a show that is not on sale returns 409 `SHOW_NOT_ON_SALE`.
 ## Lifecycle
 
 **REQ-030** `M` `user` — Confirm a hold.
-`POST /reservations/{id}/confirm` by the owner moves a `held` reservation and its seats to `confirmed` and clears the expiry. Confirming an already-confirmed reservation is idempotent and returns 200. Confirming an expired or cancelled reservation returns 409 with the terminal status.
+`POST /reservations/{id}/confirm` by the owner moves a `held` reservation and its seats to `confirmed` and clears the expiry. Confirming an already-confirmed reservation is idempotent and returns 200.
+
+Confirming a cancelled reservation returns 409 `RESERVATION_CANCELLED`. Confirming a reservation whose hold has **lapsed** returns 409 `RESERVATION_EXPIRED` with `details.status`, whether or not its seats have since been re-claimed — the statement carries `hold_expires_at > now()`, so expiry is enforced by the same mechanism that enforces ownership and there is no background worker whose lag could make a lapsed hold promotable (ADR-022). Where a lapsed hold's seat has already been re-claimed by another principal, the confirm returns 409 and the new owner's seat is untouched.
 
 **REQ-031** `M` `user` — Cancel a hold.
-`POST /reservations/{id}/cancel` by the owner releases a `held` reservation's seats to `available` and sets status `cancelled`. Cancelling an already-cancelled reservation is idempotent.
+`POST /reservations/{id}/cancel` by the owner releases a `held` reservation's seats to `available`, sets status `cancelled`, and closes its `reservation_seats` rows. Cancelling an already-cancelled reservation is idempotent and returns 200. Cancelling a `confirmed` reservation returns 409 `RESERVATION_CONFIRMED` — a sold seat is not released through this route. Cancelling a reservation whose hold has lapsed returns 409 `RESERVATION_EXPIRED`: its seats are already effectively available, so there is nothing to release, and reporting the real state is more useful than a successful no-op.
 
 **REQ-032** `M` `user` — Only the owner may act.
 A confirm or cancel by any principal other than the reservation's owner returns 404 `RESERVATION_NOT_FOUND` — existence is not disclosed to a non-owner. Admin override, if enabled, is a separate route.
 
 **REQ-033** `M` `system` — Holds expire.
-A hold not confirmed within `hold_ttl_seconds` lapses. Its seats become claimable immediately via the claim predicate, and the sweeper subsequently sets them `available` and the reservation `expired`.
+A hold not confirmed within `hold_ttl_seconds` lapses. Its seats become claimable **immediately** via the claim predicate's expiry arm, which is the entire expiry mechanism — there is no sweeper, and none is required (ADR-017). Verified with no background task running at all.
+
+From the lapse onward: `GET /shows/{id}` reports those seats `available`, the reservation reads as `expired`, the seats do not count against their former holder's per-user limit, and confirm and cancel on that reservation return 409 `RESERVATION_EXPIRED`. Stored seat and reservation rows are **not** rewritten; every reader derives effective status, which is exact at the instant of the read.
 
 **REQ-034** `M` `system` — Release never resurrects.
-A cancel, confirm, or sweep can only affect seats the reservation still owns. A seat already confirmed to another principal is never returned to `available` by another reservation's release. Verified by racing a cancel against the expiry sweeper and a competing claim.
+A cancel or confirm can only affect seats the reservation still owns and still holds unexpired. A seat already confirmed to another principal is never returned to `available` by another reservation's release, and a former holder can never confirm a seat that has moved on. Verified by racing a cancel and a confirm against a competing claim across the expiry boundary.
+
+A claim that supersedes a lapsed hold also closes that hold's `reservation_seats` row in the same transaction, so the legitimate winner never collides with the backstop index (ADR-019). Verified directly: a claim against a lapsed, unswept hold must return 201, not 409.
 
 **REQ-035** `M` `user` — Released seats are cleanly re-bookable.
 A seat released by cancel or expiry can be reserved by any principal with no residual state, and the resulting reservation is indistinguishable from a first booking.
@@ -140,7 +163,9 @@ Every request is recorded to an audit table through a bounded in-memory queue dr
 Per-principal limits apply, configured per route class via environment variables with no redeploy required to change a ceiling. The reserve path's ceiling is set so that a legitimate on-sale stampede of distinct principals is never throttled. Exceeding a limit returns 429 with `Retry-After` and is counted.
 
 **REQ-048** `M` `system` — No 5xx on domain paths.
-Zero 5xx on every domain path. Lock timeouts, serialization failures, and driver errors on the claim path are translated to 4xx or retried within the request, never surfaced as 500. The one permitted 5xx is 503 `DATABASE_UNAVAILABLE` when the database is genuinely unreachable; **zero occurrences of it are required during a burst**, which makes pool sizing part of this requirement rather than a tuning detail. Measured directly by `unhandled_exceptions_total` remaining at zero.
+Zero 5xx on every domain path. Lock timeouts, serialization failures, deadlocks and driver errors on the claim path are translated to 4xx or retried within the request, never surfaced as 500. The one permitted 5xx is 503 `DATABASE_UNAVAILABLE`, raised only for a genuine fault: the database unreachable, the pool-acquire timeout exhausted, or a statement cancelled by `statement_timeout`. **Zero occurrences of it are required during a burst**, which makes pool sizing part of this requirement rather than a tuning detail. Measured directly by `unhandled_exceptions_total` remaining at zero.
+
+A statement timeout is a fault and not a decline, which is only safe to assert because `DB_LOCK_TIMEOUT_MS` is held strictly below `DB_STATEMENT_TIMEOUT_MS` by a configured margin, validated at startup (ADR-027). Reversed, every hot-seat decline would arrive as a 503 and this requirement would fail for a configuration reason with no code defect.
 
 **REQ-049** `M` `system` — Cold start.
 After idle spin-down, the first request causes the service to come up and report healthy, and the burst script warms the target before measuring.
@@ -184,4 +209,4 @@ Non-blocking; each carries a working default so no stage stalls.
 2. **Refresh-token revocation** — stored and revocable, or short-lived and stateless? Default: stateless with a short lifetime; add a revocation table only if a requirement needs it.
 3. **Admin override on cancel** — may an admin cancel another principal's hold? Default: no route exists until asked for.
 4. **Seat-level pricing tiers** — `seats.price_paise` nullable and inheriting the show price is already in the schema; tier naming and a tier table are deferred until a requirement needs them.
-5. **Guest token lifetime versus hold TTL** — a guest token must outlive a hold or the holder cannot confirm. Default: guest token lifetime is at least `hold_ttl_seconds` plus a configured margin, enforced at startup.
+5. **Guest token lifetime versus hold TTL** — **resolved.** `GUEST_TOKEN_TTL_SECONDS > MAX_HOLD_TTL_SECONDS`, validated at startup (ADR-031, and stated as an acceptance clause on REQ-003). `MAX_HOLD_TTL_SECONDS` is the right quantity because it is the longest hold the service will ever issue; there is no single "the hold TTL" to add a margin to. The check is necessary, not sufficient — a token minted shortly before a maximum-length hold can still lapse first — and that residual is RISK-006, not something a startup check can see. It costs the guest one retry and loses no seat, which is why it is accepted rather than fixed by coupling the claim path to token internals.

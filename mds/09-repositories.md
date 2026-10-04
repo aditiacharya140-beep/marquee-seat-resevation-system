@@ -47,40 +47,52 @@ get_counts(show_id)                 -> SeatCounts
 list_seats(show_id)                 -> list[Seat]
 ```
 
-`create_show` inserts seats with one multi-row statement — a loop of inserts for a 2,000-seat hall is 2,000 round trips. `get_counts` is the single-snapshot query from [03-data-model.md](03-data-model.md), which is what makes the reconciliation invariant hold by construction. The paginated `list_shows` is deferred (ADR-015); nothing depends on it, so the cursor codec is not built yet.
+`create_show` inserts seats with one multi-row statement — a loop of inserts for a 2,000-seat hall is 2,000 round trips. `get_counts` is the single-snapshot query from [03-data-model.md](03-data-model.md), which is what makes the reconciliation invariant hold by construction. `currency` and `event_kind` are always supplied by the caller, never defaulted by the column, so there is one source for each (ADR-025). The paginated `list_shows` is deferred (ADR-015); nothing depends on it, so the cursor codec is not built yet.
 
 ### `seat_repo.py`
 
 The most important module in the service.
 
 ```
-claim_one(conn, show_id, label, user_id, reservation_id, ttl, show_price)   -> ClaimedSeat | None
-claim_many(conn, show_id, labels, user_id, reservation_id, ttl, show_price) -> list[ClaimedSeat]
-count_active_for_user(conn, show_id, user_id)                              -> int
-release_for_reservation(conn, reservation_id)                              -> list[str]
-confirm_for_reservation(conn, reservation_id)                              -> list[str]
-sweep_expired(conn, batch_size)                                            -> list[SweptSeat]
-labels_not_in_show(conn, show_id, labels)                                  -> list[str]
+claim_one(conn, show_id, label, user_id, reservation_id, ttl_or_none, show_price)   -> ClaimedSeat | None
+claim_many(conn, show_id, labels, user_id, reservation_id, ttl_or_none, show_price) -> list[ClaimedSeat]
+count_active_for_user(conn, show_id, user_id)                                      -> int
+release_for_reservation(conn, reservation_id)                                      -> list[str]
+confirm_for_reservation(conn, reservation_id)                                      -> list[str]
+labels_not_in_show(conn, show_id, labels)                                          -> list[str]
 ```
+
+`ttl_or_none` is the **one** parameter that selects the target state: `None` means claim straight to `confirmed` with no expiry, an integer means hold for that many seconds (ADR-017). The statement derives both `status` and `hold_expires_at` from it, so the two cannot be passed inconsistently. The parameter name says so, because `ttl=None` reading as "no TTL, so use a default" is exactly the misreading that would reintroduce holds everywhere.
 
 `claim_one` returns `None` on zero rows affected — the decline. `claim_many` returns whatever it claimed and the **service** compares the count to the request and rolls back; the repository does not decide policy, it reports what the statement did.
 
+`release_for_reservation` and `confirm_for_reservation` are the ordered `FOR UPDATE` CTEs from ADR-022, guarded on `reservation_id` **and** `hold_expires_at > now()`, with `ORDER BY label`. They are not plain `UPDATE ... WHERE reservation_id = $1` statements: that form locks in scan order and put cancel outside the deadlock proof, and it omitted the expiry guard, which with lazy-only expiry meant a lapsed hold stayed promotable.
+
+`sweep_expired` does not exist. There is no sweeper (ADR-017).
+
 Every statement here is quoted verbatim in [04-concurrency-and-atomicity.md](04-concurrency-and-atomicity.md). They are the same text. A change to one is a change to the other, in the same commit.
 
-The effective-status expression is imported from `db/sql.py`. It is not retyped in this module, because a second copy that drifts breaks reconciliation.
+Both effective-status expressions are imported from `db/sql.py`. Neither is retyped in this module, because a second copy that drifts breaks reconciliation.
 
 ### `reservation_repo.py`
 
 ```
-create(conn, reservation, seats)                       -> Reservation
-get_owned(conn, reservation_id, user_id)               -> Reservation | None
-mark_confirmed(conn, reservation_id)                   -> bool
-mark_cancelled(conn, reservation_id)                   -> bool
-mark_expired(conn, reservation_ids)                    -> int
-list_for_user(conn, user_id, filters, cursor, limit)   -> Page[Reservation]
+create(conn, reservation, seats)                            -> Reservation
+close_superseded_claims(conn, seat_ids)                     -> int
+get_owned(conn, reservation_id, user_id)                    -> Reservation | None
+confirm_owned(conn, reservation_id, user_id)                -> Reservation | None
+cancel_owned(conn, reservation_id, user_id)                 -> Reservation | None
+close_claims_for_reservation(conn, reservation_id)          -> int
+list_for_user(conn, user_id, filters, cursor, limit)        -> Page[Reservation]
 ```
 
-`get_owned` takes the owner as part of the `WHERE` clause. There is no `get(reservation_id)` to accidentally use without an ownership filter — the unsafe method does not exist, which is stronger than remembering to filter. The `mark_*` methods are guarded updates returning whether the transition applied, so a service can distinguish "already in that state" from "no longer yours".
+`get_owned` takes the owner as part of the `WHERE` clause. There is no `get(reservation_id)` to accidentally use without an ownership filter — the unsafe method does not exist, which is stronger than remembering to filter. It applies the reservation effective-status expression, so a lapsed hold is returned as `expired`, never as `held`.
+
+`confirm_owned` and `cancel_owned` are the guarded `UPDATE`s on the `reservations` row from ADR-022: owner and `status='held' AND hold_expires_at > now()` in the `WHERE` clause, returning the row or `None`. They replace `mark_confirmed(conn, reservation_id)` and `mark_cancelled(conn, reservation_id)`, which took no owner — a signature that made the ownership check something a service had to remember rather than something the statement enforced. `None` is the decision; the service then calls `get_owned` to choose the decline code, which is diagnosis and not control (ADR-022).
+
+`close_superseded_claims` is Mechanism 3 (ADR-019): it closes any active `reservation_seats` row for the given seat ids, called **after** the claim and **before** the insert, in T2. It returns the number of rows closed, which the service turns into `superseded_claims_closed_total`. It must never be folded into the insert's statement — LEARN-009 explains why.
+
+`mark_expired` does not exist. Nothing rewrites a lapsed hold's stored status; readers derive it.
 
 ### `idempotency_repo.py`
 
@@ -93,7 +105,15 @@ reclaim_if_stale(user_id, key, fingerprint, max_age) -> ClaimOutcome
 purge_expired(batch_size)                         -> int
 ```
 
-`try_claim` runs in its own transaction, because ownership must be visible to concurrent duplicates immediately. `complete` takes a connection, because it must commit inside the reservation's transaction. The split signature enforces that distinction at the type level rather than by convention — the argument for it is in [04-concurrency-and-atomicity.md](04-concurrency-and-atomicity.md).
+Three signatures carry an argument, and the argument is the reason for the signature:
+
+- `try_claim` takes **no connection**: it runs in its own transaction, because ownership must be visible to concurrent duplicates immediately.
+- `complete` **takes a connection**: it must commit inside the reservation's transaction, or a crash could leave a committed reservation whose key says `in_progress`.
+- `get` takes **no connection**, which is what enforces ADR-026: the in-progress waiter acquires a connection, performs one point read on `uq_idem_user_key`, releases it, and only then sleeps. A waiter that held its connection across the wait budget would exhaust the pool under burst and produce exactly the 503s ADR-016 forbids, so this is a correctness property of the signature and not a style choice.
+
+`release` deletes the row and is called on **every** rolled-back T2 — a domain decline as well as a fault (ADR-020). Only successes are ever stored, so `complete` is only ever called with a 2xx `status_code`.
+
+`purge_expired` exists for scheduled retention maintenance, not for a background loop; there is no worker that calls it (RISK-007).
 
 ### `audit_repo.py`
 
@@ -126,7 +146,11 @@ The audit writer holds its own connection outside the request pool, so a saturat
 | A loop of single-row inserts | N round trips where one statement suffices. |
 | `SELECT *` | A new column silently changes every mapping. |
 | Unfiltered `get_by_id` on an owned resource | One forgotten check from an authorization bypass. |
-| Re-typing the effective-status expression | Divergent copies break reconciliation. |
-| `SKIP LOCKED` in the claim path | Declines seats that are still available. Sweeper only. |
+| Re-typing either effective-status expression | Divergent copies break reconciliation. |
+| `SKIP LOCKED` anywhere | Declines seats that are still available. With no sweeper (ADR-017) it has no remaining legitimate use. |
+| An unordered `UPDATE` over a reservation's seats | Locks in scan order and leaves cancel and confirm outside the deadlock proof (ADR-022). |
+| A release or confirm with no `hold_expires_at > now()` guard | Promotes or releases a lapsed hold. With lazy-only expiry nothing else would catch it. |
+| Holding a connection across an idempotency poll | Exhausts the pool under burst (ADR-026). |
+| Folding the superseded-row closure into the insert statement | Data-modifying CTEs share a snapshot with no defined order (LEARN-009). |
 | Raising a driver exception past this layer | The route cannot know what the constraint means. |
 | Returning an ORM-ish lazy object | Hides IO behind attribute access, outside any transaction. |

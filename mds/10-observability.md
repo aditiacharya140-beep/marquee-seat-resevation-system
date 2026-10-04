@@ -38,19 +38,23 @@ Verified by a test that stops the database and asserts 503 while `/healthz` stay
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `reservations_confirmed_total` | counter | `show_id` | holds promoted to confirmed |
-| `reservations_created_total` | counter | `show_id` | holds successfully taken |
+| `reservations_created_total` | counter | `show_id`, `kind` | successful reserves; `kind` is `confirmed` or `held` |
+| `reservations_confirmed_total` | counter | `show_id` | holds promoted by an explicit confirm |
 | `reservations_declined_total` | counter | `reason` | **the headline metric** |
 | `reservations_cancelled_total` | counter | `show_id` | explicit cancels |
-| `reservations_expired_total` | counter | — | swept by the hold sweeper |
+| `superseded_claims_closed_total` | counter | — | claim rows closed because a lapsed hold's seat was re-claimed (ADR-019) |
 | `seats_available` | gauge | `show_id` | available seats |
 | `seats_held` | gauge | `show_id` | active holds |
 | `seats_confirmed` | gauge | `show_id` | sold |
 | `seats_total` | gauge | `show_id` | for the invariant check |
 
-`reason` values: `seat_taken`, `per_user_limit`, `idempotent_replay`, `idempotency_key_reused`, `idempotency_in_progress`, `show_not_on_sale`, `lock_timeout`, `deadlock`.
+`reason` values: `seat_taken`, `per_user_limit`, `idempotent_replay`, `idempotency_key_reused`, `idempotency_in_progress`, `show_not_on_sale`, `reservation_expired`, `lock_timeout`, `deadlock`.
 
 A burst's entire story reads off `reservations_declined_total`: how many lost a race, how many hit their limit, how many were retries. That breakdown is what distinguishes a correct service under contention from a broken one, and it is why declines are counted by reason rather than lumped together.
+
+`reservations_created_total` is labelled by `kind` because ADR-017 gives a reserve two outcomes. The split is how an operator sees whether the hold path is being exercised at all — and with holds opt-in, a `held` count of zero over a burst is expected, not a fault.
+
+`reservations_expired_total` is **gone**. Nothing observes a lapse: with no sweeper there is no moment at which the service notices a hold expired, only moments at which readers derive it. `superseded_claims_closed_total` replaces it as the honest signal — it counts lapsed holds whose seats were actually re-sold, which is the thing worth knowing, measured where the work happens.
 
 ### HTTP
 
@@ -71,8 +75,6 @@ A burst's entire story reads off `reservations_declined_total`: how many lost a 
 | `db_pool_size`, `db_pool_in_use`, `db_pool_waiting` | gauge | saturation, and the early warning for a 503 |
 | `db_query_duration_seconds` | histogram | labelled by operation, bounded set |
 | `seat_claim_lock_wait_seconds` | histogram | hot-seat contention, directly observable |
-| `hold_sweeper_last_run_timestamp` | gauge | staleness of expiry reporting |
-| `hold_sweeper_swept_total` | counter | |
 | `audit_queue_depth` | gauge | backpressure indicator |
 | `audit_records_written_total` | counter | |
 | `audit_records_dropped_total` | counter | must stay zero |
@@ -84,7 +86,7 @@ Label values come only from bounded sets. `show_id` is the one unbounded label, 
 
 ### Gauge refresh and reconciliation
 
-Counters are incremented inline in the service layer, so they are exact.
+Counters are incremented inline in the service layer, so they are exact. Framework-level declines (`ROUTE_NOT_FOUND`, `METHOD_NOT_ALLOWED`) are *not* domain declines and do not touch `reservations_declined_total`; they appear in `http_requests_total{status}` where they belong.
 
 Gauges cannot be: recomputing per-show seat counts on every claim would add a full count to the hot path. They are refreshed by a background task every configured interval using the same single-snapshot counts query the API uses, so the gauge and `GET /shows/{id}` are derived from identical SQL and cannot disagree about what "available" means.
 
@@ -153,10 +155,11 @@ Ordered by what each one actually means.
 | **Reconciliation violated** | `seats_available + seats_held + seats_confirmed != seats_total` sustained beyond one gauge interval | Either a real invariant break or a drifted effective-status expression. Not alerted inside one interval, because gauges lag. |
 | **Pool exhausted** | `db_pool_waiting` sustained above zero | The precursor to 503s. Catching it here prevents the alert above. |
 | **Audit dropping** | `audit_records_dropped_total` increases | Losing the audit trail, and a signal that the writer is stalled or the database is slow. |
-| **Sweeper stalled** | `hold_sweeper_last_run_timestamp` older than several intervals | Reported state is going stale. Not urgent — expiry is enforced lazily in the claim predicate, so seats stay bookable — but it degrades every state read. |
 | **Lock wait tail** | `seat_claim_lock_wait_seconds` p99 above threshold | Hot-seat contention approaching `lock_timeout`, which would turn into spurious declines. |
 
-Deliberately **not** paging: a high rate of `SEAT_TAKEN`, a high rate of `PER_USER_LIMIT`, a high rate of `idempotent_replay`, or high request volume. Those are the service working correctly during an on-sale. An alert that fires every time the product succeeds is an alert that gets muted, and a muted alert channel is how the real one gets missed.
+There is no "sweeper stalled" alert, because there is no sweeper (ADR-017). What it used to warn about — reported state going stale while seats stayed bookable — cannot happen when every reader derives effective status at read time.
+
+Deliberately **not** paging: a high rate of `SEAT_TAKEN`, a high rate of `PER_USER_LIMIT`, a high rate of `idempotent_replay`, a rising `superseded_claims_closed_total`, or high request volume. Those are the service working correctly during an on-sale — the last one is simply holds lapsing and their seats being resold, which is what holds are for. An alert that fires every time the product succeeds is an alert that gets muted, and a muted alert channel is how the real one gets missed.
 
 ---
 

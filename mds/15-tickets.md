@@ -1,6 +1,6 @@
 # Tickets
 
-**65 tickets, `SEAT-001` … `SEAT-065`**, grouped under the stages in [14-stage-plan.md](14-stage-plan.md). The set is closed: no ticket is added without a corresponding entry in [01-requirements.md](01-requirements.md) or an explicit `ADR-*`, and no `REQ-*` is left without a ticket.
+**67 tickets, `SEAT-001` … `SEAT-067`**, grouped under the stages in [14-stage-plan.md](14-stage-plan.md). The set is closed: no ticket is added without a corresponding entry in [01-requirements.md](01-requirements.md) or an explicit `ADR-*`, and no `REQ-*` is left without a ticket.
 
 ## How to read a ticket
 
@@ -64,7 +64,7 @@ Scope:        `app/core/config.py`, `app/core/constants.py`, `.env.example`
 Done when:
   - Every variable in the configuration table of `13-deployment.md` is declared as a typed field; no literal ceiling, TTL, batch size, or limit exists anywhere else in `app/`.
   - Omitting `JWT_SECRET` or `DATABASE_URL` raises at import of the settings object with a message naming the missing variable; the process exits non-zero.
-  - `SeatStatus`, `ReservationStatus`, `Role`, `EventKind` and the header names are enums or constants in `constants.py`, with values matching the `CHECK` constraints in `03-data-model.md`.
+  - `SeatStatus`, `ReservationStatus`, `ShowStatus`, `IdempotencyState`, `Role` and the header names are enums or constants in `constants.py`, with values matching the `CHECK` constraints in `03-data-model.md`. **No `EventKind` enum** — the permitted set is `ALLOWED_EVENT_KINDS` in configuration, and a grep for a vertical name in `app/` finds nothing (ADR-025).
   - A unit test asserts the resolved settings object round-trips every documented variable from the environment.
 Test:         `tests/unit/test_config.py::test_missing_required_secret_fails_startup`, `::test_every_documented_variable_is_declared`
 
@@ -78,7 +78,7 @@ Done when:
   - Every emitted line is single-line JSON carrying `ts`, `level`, `event`, `request_id`, `service`, `version`; `event` values are snake_case identifiers from the catalogue in `08-error-logging.md`.
   - The redaction filter removes `password`, `password_hash`, `token`, `authorization`, and `DATABASE_URL` from any `extra=` payload; a test passing each of them asserts the value is absent from the output.
   - `AppError` and the subclass set in `08-error-logging.md` exist, each carrying `code`, `http_status`, `message`, `details`, `log_level`.
-  - `error_codes.py` is the only place a code appears; a test asserts every code maps to exactly one status, no code is declared twice, and the registry set equals the codes listed in the `06-apis.md` contract tables.
+  - `error_codes.py` is the only place a code appears; a test asserts every code maps to exactly one status and no code is declared twice; the `06-apis.md` contract codes are a **subset** of the registry, and the surplus is exactly the operational codes mandated by `08-error-logging.md` (`DATABASE_UNAVAILABLE`, `NOT_READY`, `INTERNAL_ERROR`) plus the framework-failure codes from ADR-023. Equality is not assertable — those codes appear in no contract table.
 Test:         `tests/unit/test_error_registry.py`, `tests/unit/test_logging_redaction.py`
 
 ### SEAT-004 — App factory, request correlation, access log and `/healthz`
@@ -376,7 +376,7 @@ The decomposition is deliberate: the two claim statements, the quota lock, the i
 
 Two standing rules apply to every ticket in this stage, taken from `04-concurrency-and-atomicity.md`:
 
-- **No `SELECT` then `UPDATE` in the claim path**, in any wrapper. **No `SKIP LOCKED` in the claim path** — sweeper only.
+- **No `SELECT` then `UPDATE` in the claim path**, in any wrapper. **No `SKIP LOCKED` anywhere** — ADR-017 removed the sweeper, which was its only legitimate use.
 - **No transaction acquires a quota lock after acquiring a seat lock.** Any ticket that adds a path doing so is rejected at review, not fixed later.
 
 ### SEAT-024 — Migrations: `reservations`, `reservation_seats`, `user_show_quota`, `idempotency_keys`
@@ -429,7 +429,7 @@ Depends on:   SEAT-026
 Size:         M
 Scope:        `tests/concurrency/test_claim_semantics.py`
 Done when:
-  - The four `LEARN-002` probes are automated rather than trusted as a one-off manual result: a loser blocks then re-evaluates and reports zero rows; 50 concurrent claimers on one seat produce 1 winner, 49 losers and **zero** errors; a winner that rolls back lets the blocked claimer win; a lapsed hold is claimable with no sweeper running.
+  - The four `LEARN-002` probes are automated rather than trusted as a one-off manual result: a loser blocks then re-evaluates and reports zero rows; 50 concurrent claimers on one seat produce 1 winner, 49 losers and **zero** errors; a winner that rolls back lets the blocked claimer win; a lapsed hold is claimable with no worker involved — which under ADR-017 is the entire expiry mechanism, not a fallback.
   - The zero-errors assertion is explicit — a loser must be a return value, never a raised driver exception.
   - The suite runs against the real PostgreSQL 16 instance and is wired into CI at reduced parallelism.
   - The file header names `LEARN-002` and states that this is the minimum regression set for any change to the claim predicate.
@@ -504,7 +504,9 @@ Done when:
   - `seat_count` and `amount_paise` are integers and `amount_paise` equals the sum of the captured seat prices, asserted at 2,000 seats.
   - `get_owned(conn, reservation_id, user_id)` exists and there is **no** `get(reservation_id)`; asserted by a test that introspects the module's public names.
   - A second active claim row for one seat raises the backstop violation, which the repository translates to 409 `SEAT_TAKEN` and logs at `error`.
-Test:         `tests/integration/test_reservation_repo.py::test_price_is_captured_at_claim_time`, `::test_no_unfiltered_getter_exists`
+  - **Superseded rows are closed before the new ones are inserted** (ADR-019): `UPDATE reservation_seats SET released_at = now() WHERE seat_id = ANY($1) AND released_at IS NULL`, as a **separate statement** in the same transaction, never folded into the insert's CTE — sub-statements of one `WITH` share a snapshot and have no defined order, so the insert could be evaluated first and trip `uq_seat_active_claim` anyway (LEARN-009).
+  - A claim against a lapsed, unswept hold **succeeds** rather than violating the backstop index, asserted directly: set a hold's `hold_expires_at` into the past, claim the seat as another principal, and expect 201 with exactly one active `reservation_seats` row. Without the closure above this test returns 409, so it fails against the un-fixed implementation.
+Test:         `tests/integration/test_reservation_repo.py::test_price_is_captured_at_claim_time`, `::test_no_unfiltered_getter_exists`, `::test_claim_against_lapsed_hold_succeeds`
 
 ### SEAT-033 — `reservation_service.reserve`: the two-transaction orchestration
 Stage:        4
@@ -694,19 +696,17 @@ Done when:
   - Ownership is a `WHERE` clause via `get_owned`; a non-owner — including an admin — receives 404 `RESERVATION_NOT_FOUND` with no state change, and the latency of a non-owner request is indistinguishable from an unknown id.
 Test:         `tests/concurrency/test_lifecycle.py` (added by `SEAT-048`), `tests/integration/test_reservations.py`
 
-### SEAT-046 — `workers/hold_sweeper.py` and reservation reads
+### SEAT-046 — Reservation reads
 Stage:        5
-Covers:       REQ-033, REQ-036
+Covers:       REQ-036
 Depends on:   SEAT-045
-Size:         L
-Scope:        `app/workers/hold_sweeper.py`, `app/repositories/seat_repo.py` (`sweep_expired`), `app/repositories/reservation_repo.py` (`mark_expired`, `list_for_user`), `app/api/routes/reservations.py`, `app/main.py` (lifespan task)
+Size:         S
+Scope:        `app/repositories/reservation_repo.py` (`list_for_user`), `app/api/routes/reservations.py`, `app/schemas/reservations.py`
 Done when:
-  - The sweeper runs the `FOR UPDATE SKIP LOCKED` statement from `04-concurrency-and-atomicity.md` in bounded batches at the configured interval, sets its own request id per batch, and logs `hold_sweep_batch` with the count and duration.
-  - Swept seats become `available` with `held_by`, `reservation_id` and `hold_expires_at` nulled; their reservations become `expired` with `expired_at`; their `reservation_seats` rows get `released_at`.
-  - Stopping the sweeper entirely does not make a lapsed seat unbookable — a test with the worker disabled asserts the claim still succeeds, proving the worker is not in the correctness path.
-  - Two sweeper instances running together divide a batch rather than conflict, asserted by a test running two loops concurrently with no error and no double-release.
-  - `GET /reservations` is keyset-paginated over the principal's own rows only, filtered by `show_id` and `status`; `GET /reservations/{id}` returns 404 for a reservation the principal does not own.
-Test:         `tests/integration/test_reservations.py::test_sweeper_disabled_still_allows_claim`, `tests/integration/test_reservations.py::test_reads_are_owner_scoped`
+  - `GET /reservations` returns only the calling principal's reservations, keyset-paginated, and `GET /reservations/{id}` returns 404 for a reservation owned by anyone else.
+  - A reservation whose opt-in hold has lapsed reads as expired, derived at read time — there is no worker, so stored status is not relied on (ADR-017).
+  - Ownership is a `WHERE` clause, not a post-fetch comparison; no unfiltered get-by-id exists in the repository.
+Test:         `tests/integration/test_reservations.py::test_reads_are_owner_scoped`, `::test_lapsed_hold_reads_as_expired`
 
 ### SEAT-047 — Integration: lifecycle, ownership and expiry reporting
 Stage:        5
@@ -729,10 +729,10 @@ Depends on:   SEAT-047
 Size:         M
 Scope:        `tests/concurrency/test_lifecycle.py`
 Done when:
-  - A hold about to lapse is raced by a competing claim with the sweeper running; the seat ends owned by exactly one principal, asserted on `seats` and on the single active `reservation_seats` row.
+  - A hold about to lapse is raced by a competing claim; the seat ends owned by exactly one principal, asserted on `seats` and on the single active `reservation_seats` row.
   - The original holder's `confirm` either succeeds (it won) or returns 409 (it lost), and never takes the seat from a new owner — asserted by comparing `held_by` before and after the losing confirm.
   - A cancel of a reservation whose seat has moved on affects zero rows and leaves the new owner's seat untouched.
-  - A cancel raced against the sweeper and a competing claim produces no double-release: `reservations_expired_total` plus `reservations_cancelled_total` never exceeds the number of reservations.
+  - A cancel raced against a competing claim on a lapsing hold produces no double-release: exactly one active `reservation_seats` row per contested seat, and `reservations_cancelled_total` never exceeds the number of reservations.
   - Zero 5xx across every variant.
 Test:         `tests/concurrency/test_lifecycle.py::test_claim_races_expiry`, `::test_release_never_resurrects`
 
@@ -743,7 +743,7 @@ Depends on:   SEAT-048
 Size:         S
 Scope:        review only
 Done when:
-  - Attack list covered in writing: a release that is not predicated on current ownership, a confirm that can reclaim a re-sold seat, a 403 leaking existence to a non-owner, an admin implicitly overriding ownership, a sweeper that takes a quota lock, `SKIP LOCKED` behaviour assumed rather than tested with two workers, a cancel path that writes an incoherent seat row.
+  - Attack list covered in writing: a release that is not predicated on current ownership, a confirm that can reclaim a re-sold seat, a 403 leaking existence to a non-owner, an admin implicitly overriding ownership, a cancel path that writes an incoherent seat row, a superseded `reservation_seats` row left open so the next legitimate claim trips `uq_seat_active_claim` (ADR-019), and the two statements of that closure folded into one CTE despite LEARN-009.
   - Every finding fixed, refuted in writing, or recorded as `RISK-*`.
 Test:         n/a
 
@@ -832,9 +832,9 @@ Test:         n/a
 This is the stage that produces evidence; everything before it is a claim. The burst script is a gate, not a report — it exits non-zero on any violation.
 
 ### SEAT-055 — Burst harness, configuration and phases 0–2
-Stage:        7
+Stage:        7 — **startable alongside Stage 0**; it codes against the HTTP contract in `06-apis.md`, which is already written, and needs no running service until SEAT-058
 Covers:       REQ-049
-Depends on:   SEAT-054
+Depends on:   SEAT-001
 Size:         L
 Scope:        `burst/burst.py`, `burst/config.py`, `burst/client.py`
 Done when:
@@ -877,7 +877,7 @@ Test:         `burst/tests/test_exit_contract.py` (injects each violation and as
 ### SEAT-058 — Reconciliation under load: poller, test and pool tuning
 Stage:        7
 Covers:       REQ-013, REQ-048
-Depends on:   SEAT-057
+Depends on:   SEAT-057, SEAT-044
 Size:         L
 Scope:        `burst/poller.py`, `tests/concurrency/test_reconciliation.py`, `app/core/config.py`, `render.yaml`
 Done when:
@@ -891,7 +891,7 @@ Test:         `tests/concurrency/test_reconciliation.py`, plus the poller line i
 ### SEAT-059 — Full-scale run against the live URL
 Stage:        7
 Covers:       REQ-013, REQ-021, REQ-048
-Depends on:   SEAT-058
+Depends on:   SEAT-058, SEAT-054
 Size:         M
 Scope:        execution and evidence capture; configuration fixes only, no new code
 Done when:
@@ -993,6 +993,39 @@ Test:         `tests/integration/test_admin_audit.py::test_monitoring_view_is_re
 
 ---
 
+## Added after the Stage 0 review
+
+Appended rather than renumbered, so existing ids stay stable. Both arise from decisions taken after the board was first written.
+
+### SEAT-066 — Framework failures answer inside the envelope
+Stage:        0
+Covers:       REQ-045 — "every failure uses the envelope" is not satisfied while unmatched routes bypass it
+Depends on:   SEAT-004
+Size:         S
+Scope:        `app/core/error_codes.py`, `app/main.py`, `app/middleware/` (catch-all boundary)
+Done when:
+  - `GET /nope` returns 404 in the standard envelope with code `ROUTE_NOT_FOUND` and a `request_id`, not Starlette's `{"detail":"Not Found"}` (ADR-023).
+  - A wrong method on a known path returns 405 in the envelope with `METHOD_NOT_ALLOWED`.
+  - An unhandled exception produces **exactly one** log line carrying the request id and a stack trace — the catch-all is a middleware boundary immediately inside the request context, not only an exception handler, because `ServerErrorMiddleware` re-raises after responding and logs again outside the context (ADR-024, LEARN-010).
+  - `unhandled_exceptions_total` increments once per fault, not twice.
+  - The registry test from SEAT-003 passes with the two new codes present.
+Test:         `tests/integration/test_errors.py::test_unmatched_route_uses_envelope`, `::test_bad_method_uses_envelope`, `::test_unhandled_exception_logs_once_with_request_id`
+
+### SEAT-067 — `GET /shows`: paginated catalogue without counts
+Stage:        3
+Covers:       REQ-014
+Depends on:   SEAT-021
+Size:         M
+Scope:        `app/repositories/show_repo.py` (`list_shows`), `app/services/show_service.py`, `app/api/routes/shows.py`, `app/schemas/shows.py`, `app/helpers/pagination.py`, `app/utils/cursor.py`
+Done when:
+  - `GET /shows` returns id, name, `event_kind`, status, `price_paise`, `total_seats` and the sale window, keyset-paginated on the immutable `(created_at, id)`, with `limit` bounded by configuration.
+  - **No availability counts in the list response, and the query never scans `seats`** — asserted by a test that creates several large shows and checks the plan touches no seat rows. Exact availability remains the job of `GET /shows/{id}`.
+  - `status` and `event_kind` filters work, and the endpoint is reachable unauthenticated.
+  - Paging through a catalogue that is being booked concurrently neither skips nor duplicates a show, because the sort key cannot change.
+Test:         `tests/integration/test_shows.py::test_list_is_keyset_paginated`, `::test_list_does_not_scan_seats`, `::test_list_is_stable_under_concurrent_booking`
+
+---
+
 ## Critical path
 
 The shortest chain from nothing to a live service that holds every invariant under a full-scale burst. Every ticket on it is a blocker: slipping one slips the evidence in `SEAT-059`.
@@ -1011,7 +1044,7 @@ The shortest chain from nothing to a live service that holds every invariant und
 
 **On the path and non-negotiable:** `SEAT-010` (a live URL from Stage 1; discovering a platform problem at Stage 6 costs a day), `SEAT-019` (the two seat constraints every later proof rests on), `SEAT-025` and `SEAT-026` (the claim), `SEAT-028` (the quota lock), `SEAT-030`–`SEAT-031` (the key lifecycle), `SEAT-033` (the two-transaction boundary), `SEAT-035` (the only thing standing between a lock timeout and a 5xx), `SEAT-043` (without the negative controls, the concurrency suite is an untested assertion), `SEAT-058` (pool arithmetic is where zero-5xx is won or lost).
 
-**What can slip without putting the burst at risk:** `SEAT-006` and `SEAT-022` (valuable regression cover, not prerequisites), `SEAT-021`'s list endpoint and `REQ-014` generally, `SEAT-027` (the probes re-prove what `SEAT-039` also proves, so they can follow it), `SEAT-036` (money exactness is independent of contention), `SEAT-046` (the sweeper is explicitly not in the correctness path — a dead sweeper degrades reporting, not safety), `SEAT-051` and `SEAT-052` (audit and rate limiting are protective, and no invariant depends on either), Stage 8 entirely, Stage 9 entirely.
+**What can slip without putting the burst at risk:** `SEAT-006` and `SEAT-022` (valuable regression cover, not prerequisites),  `SEAT-027` (the probes re-prove what `SEAT-039` also proves, so they can follow it), `SEAT-036` (money exactness is independent of contention), `SEAT-046` (reservation reads are not on the booking path), `SEAT-051` and `SEAT-052` (audit and rate limiting are protective, and no invariant depends on either), Stage 8 entirely, Stage 9 entirely.
 
 **What must never slip past its stage gate:** `SEAT-044`. Stage 4's `grill` is the review the service is judged on, and no Stage 5 ticket opens before it closes.
 
@@ -1084,7 +1117,7 @@ Decomposing surfaced ten places where `mds/01-requirements.md` is silent on beha
 | 4 | **Stale idempotency-key reclaim and retention.** `04-concurrency-and-atomicity.md` specifies both; no requirement does, so `SEAT-030` carries them as enabling work with no traced acceptance criterion. | Add a requirement: a key `in_progress` beyond the configured staleness window is reclaimable exactly once, and keys are purged after `IDEMPOTENCY_RETENTION_HOURS`. Without it, one crash poisoning a key forever is an untraced failure mode. |
 | 5 | **Idempotency key scope.** No requirement says the same key against a different show is a distinct operation, though `scope = reserve:{show_id}` is in the schema and in `SEAT-031`. | Add the clause to REQ-024, since a client reusing one key across two shows is a realistic retry pattern and the wrong answer would be a wrong replay. |
 | 6 | **Per-request `hold_ttl_seconds` clamping.** `06-apis.md` accepts it and clamps it to the show's maximum; no requirement defines the clamp or the behaviour when the value exceeds it. | Add to REQ-020: an over-maximum value is clamped silently, or rejected 422 — pick one. Recommendation: clamp, matching `06-apis.md`, and state it. |
-| 7 | **Operational metric set incomplete in REQ-042.** REQ-042 lists five metrics; `10-observability.md` catalogues `unhandled_exceptions_total`, `db_pool_waiting`, `seat_claim_lock_wait_seconds` and the sweeper gauges, and three of the nine alerts depend on them. | Extend REQ-042's list to the full catalogue, or add a second requirement for the operational metrics. `unhandled_exceptions_total` especially: it is the direct measurement of REQ-048 and is currently required by no requirement. |
+| 7 | **Operational metric set incomplete in REQ-042.** REQ-042 lists five metrics; `10-observability.md` catalogues `unhandled_exceptions_total`, `db_pool_waiting` and `seat_claim_lock_wait_seconds`, and three of the nine alerts depend on them. | Extend REQ-042's list to the full catalogue, or add a second requirement for the operational metrics. `unhandled_exceptions_total` especially: it is the direct measurement of REQ-048 and is currently required by no requirement. |
 | 8 | **Graceful-shutdown audit flush.** Required by `10-observability.md` and tested per `12-testing-and-burst.md`; REQ-046 does not mention it. | Add to REQ-046: a graceful shutdown drains the queue within a bounded timeout. |
 | 9 | **Admin bootstrap has no requirement.** Open question 1 carries a working default and `SEAT-015` implements it, but startup behaviour that creates a privileged principal should be a traced requirement rather than an answered question. | Promote open question 1 to a requirement: idempotent, created only when absent, logged loudly, and absent credentials proceed without an admin. |
 | 10 | **`GET /auth/me` has no requirement.** It appears in the route table and the permission matrix only. | Add a one-line requirement, or fold it into REQ-005 as the canonical check that the token subject is the acting principal. |

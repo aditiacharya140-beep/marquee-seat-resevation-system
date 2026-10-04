@@ -57,7 +57,7 @@ Migrations for `shows`, `seats` with every constraint and index from [03-data-mo
 
 ## Stage 5 — Lifecycle
 
-`confirm` and `cancel`, owner-only via a `WHERE` clause, idempotent, guarded on current ownership. `hold_sweeper` with `SKIP LOCKED`. Reservation reads.
+`confirm` and `cancel`, owner-only via a `WHERE` clause, idempotent, guarded on current ownership and on the unexpired arm. Reservation reads, with a lapsed hold's status derived at read time. No sweeper (ADR-017).
 
 **Exit:** expiry frees seats both lazily and by sweep; a released seat is cleanly re-bookable; a cancel or confirm cannot resurrect or steal a seat that has moved on; the claim-racing-expiry test passes; non-owner access returns 404.
 **Covers:** REQ-030 – REQ-036.
