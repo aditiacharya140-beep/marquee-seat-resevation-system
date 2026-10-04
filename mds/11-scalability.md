@@ -58,7 +58,7 @@ pool_per_instance    = usable_connections / instance_count − one kept back
 
 The pool is sized by what the **database** can serve, never by expected request concurrency. Postgres backends are processes; a pool larger than the database's ceiling converts a queue the application controls into refusals the application cannot control.
 
-Excess concurrency therefore queues **at the pool**, which is the right place for it: the wait is bounded by an acquire timeout, and a request that exceeds it returns 503 `DATABASE_UNAVAILABLE` — the single legitimate 5xx in the service. Keeping it at zero under a full-scale burst is a sizing exercise, and `db_pool_waiting` sustained above zero is the alert that precedes it.
+Excess concurrency therefore queues **at the pool**, which is the right place for it: the wait is bounded by an acquire timeout, and a request that exceeds it returns 503 `DATABASE_UNAVAILABLE` — the single legitimate 5xx in the service. Keeping it at zero under a full-scale burst is a sizing exercise, and the alert that should precede it — pool waiters sustained above zero — cannot be raised yet, because the pool gauges are not exposed ([17-future-scope.md](17-future-scope.md), item 4).
 
 A 20,000-request burst against a pool of, say, 20 means a queue roughly 1,000 deep. At ~6 round trips of a few milliseconds each, that drains in single-digit seconds. **The acquire timeout must exceed that drain time**, or correct requests are refused for a queue that was about to serve them. This is the one number most likely to produce a spurious 5xx under load, so it is configured generously and measured by the burst script.
 
