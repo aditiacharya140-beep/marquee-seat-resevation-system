@@ -15,6 +15,7 @@
 .tabpane { display: grid; gap: 16px; margin-top: 16px; }
 
 .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.toolbar input[type=number] { width: 170px; }
 .toolbar input, .toolbar select, .form input, select {
   background: var(--panel-2); color: var(--text); border: 1px solid var(--line-strong);
   border-radius: 8px; padding: 7px 10px; font: inherit; min-width: 0; }
@@ -51,10 +52,10 @@
 .pill.s4 { color: var(--amber); border-color: var(--amber); }
 .pill.s5 { color: var(--red); border-color: var(--red); }
 
-.chart { display: flex; align-items: flex-end; gap: 3px; height: 140px; padding-top: 8px; }
-.bar { flex: 1; min-width: 3px; display: flex; flex-direction: column-reverse; border-radius: 3px 3px 0 0;
-       overflow: hidden; background: var(--panel-2); }
-.bar span { display: block; }
+.chart { display: flex; align-items: stretch; gap: 3px; height: 140px; padding-top: 8px; }
+.bar { flex: 1; min-width: 3px; max-width: 48px; height: 100%; display: flex; flex-direction: column-reverse;
+       border-radius: 3px 3px 0 0; overflow: hidden; }
+.bar span { display: block; flex: none; }
 .bar .ok { background: var(--accent); }
 .bar .warn { background: var(--amber); }
 .bar .bad { background: var(--red); }

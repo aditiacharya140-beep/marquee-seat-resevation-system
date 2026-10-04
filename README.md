@@ -159,6 +159,8 @@ mds/                the design, kept in step with the code — start at mds/00-o
 <https://seat-reservation-vw5k.onrender.com/admin> — sign in with
 `admin@example.com` / `seat-admin-2026`.
 
+![The admin console's overview after a burst](mds/img/admin.png)
+
 | Tab | Shows |
 |---|---|
 | **Overview** | Requests, successes, declines and server errors over a chosen window; requests per minute; declines by reason; latency (p50/p95) per route; database connections in use; the audit buffer; every counter |
