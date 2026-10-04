@@ -26,6 +26,16 @@ make migrate run                 # http://localhost:8000
 make lint types test             # ruff, mypy --strict, pytest
 ```
 
+## Give it a programme
+
+```bash
+ADMIN_EMAIL=… ADMIN_PASSWORD=… .venv/bin/python scripts/seed_demo.py https://seat-reservation-vw5k.onrender.com
+```
+
+Six films in a three-tier hall, each about a third sold through the real guest-and-reserve
+path, so the page has something to show. Safe to run twice; for a local target the admin
+credentials come from `./.env`.
+
 ## Burst it
 
 ```bash

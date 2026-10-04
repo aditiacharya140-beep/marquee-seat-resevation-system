@@ -53,6 +53,7 @@ ignore = ["S101"]
 # is the one-definition rule of ADR-012. Values are bound parameters, never interpolated.
 "app/repositories/*" = ["S608"]
 "burst/*" = ["S"]
+"scripts/*" = ["S"]
 
 [tool.mypy]
 python_version = "3.13"

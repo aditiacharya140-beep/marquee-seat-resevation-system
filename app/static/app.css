@@ -121,7 +121,7 @@ ul { margin: 0; padding: 0; list-style: none; }
 
 /* ---------- shows ---------- */
 
-.show-list { display: grid; gap: 6px; }
+.show-list { display: grid; gap: 6px; max-height: 70vh; overflow-y: auto; }
 .show-item {
   width: 100%;
   text-align: left;
@@ -138,14 +138,45 @@ ul { margin: 0; padding: 0; list-style: none; }
 }
 .show-item:hover { background: var(--panel-2); }
 .show-item.active { background: var(--panel-2); border-color: var(--accent); }
+.show-item { align-items: center; justify-content: flex-start; }
 .show-item .name { display: block; font-weight: 500; overflow-wrap: anywhere; }
 .show-item .small { display: block; }
+.show-text { min-width: 0; }
+
+/* A poster stands in for artwork the API does not carry: a colour from the title. */
+.poster {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 54px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  color: rgba(255, 255, 255, .92);
+  background: linear-gradient(160deg, hsl(var(--hue) 65% 46%), hsl(calc(var(--hue) + 45) 70% 20%));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08);
+}
+.poster.large { width: 64px; height: 88px; border-radius: 8px; font-size: 20px; }
+
+.show-title { display: flex; gap: 14px; align-items: center; min-width: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.chip {
+  padding: 2px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
 .show-item .price { white-space: nowrap; }
 
 /* ---------- seat map ---------- */
 
 .show-head { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-.show-head h2 { font-size: 20px; margin-bottom: 2px; overflow-wrap: anywhere; }
+.show-head { align-items: center; }
+.show-head h2 { font-size: 22px; margin: 0; overflow-wrap: anywhere; }
 
 .counts { display: flex; gap: 18px; margin: 0; }
 .counts div { text-align: right; }
@@ -172,7 +203,19 @@ ul { margin: 0; padding: 0; list-style: none; }
 
 .seat-map { display: grid; gap: 6px; }
 .seat-row { display: flex; align-items: center; justify-content: center; gap: 6px; }
-.seat-row.loose { flex-wrap: wrap; max-width: 560px; }
+.seat-row.loose { flex-wrap: wrap; max-width: 620px; margin: 0 auto; }
+.tier-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 14px 0 4px;
+  font-size: 11px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.tier-head:first-child { margin-top: 0; }
+.tier-head::before, .tier-head::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 .row-label { width: 24px; text-align: center; font-size: 12px; color: var(--muted); flex: none; }
 
 .seat {
@@ -234,8 +277,9 @@ ul { margin: 0; padding: 0; list-style: none; }
     linear-gradient(to bottom right, transparent calc(50% - .75px), var(--sold) calc(50% - .75px), var(--sold) calc(50% + .75px), transparent calc(50% + .75px));
 }
 
-.seat.tier { border-bottom: 3px solid var(--amber); }
-.seat.tier.selected { border-bottom-color: #fff; }
+.seat[data-aisle] { margin-left: 22px; }
+.seat[data-tier] { border-bottom: 3px solid var(--amber); }
+.seat[data-tier].selected { border-bottom-color: #fff; }
 
 .legend {
   display: flex;
@@ -263,18 +307,31 @@ ul { margin: 0; padding: 0; list-style: none; }
 
 /* ---------- bookings ---------- */
 
-.booking-list { display: grid; }
-.booking {
+.ticket-list { display: grid; gap: 10px; }
+.ticket {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 14px;
   flex-wrap: wrap;
-  padding: 12px 0;
-  border-top: 1px solid var(--line);
+  padding: 12px 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
 }
-.booking:first-child { border-top: 0; padding-top: 0; }
-.booking-side { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ticket.cancelled, .ticket.expired { opacity: .6; }
+.ticket-body { flex: 1; min-width: 180px; }
+.ticket-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-left: 14px;
+  border-left: 1px dashed var(--line-strong);
+  min-height: 54px;
+}
+.facts { display: flex; flex-wrap: wrap; gap: 4px 22px; margin: 8px 0 0; }
+.facts dt { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.facts dd { margin: 0; font-size: 13px; font-variant-numeric: tabular-nums; }
 
 .link {
   font: inherit;
@@ -305,8 +362,9 @@ ul { margin: 0; padding: 0; list-style: none; }
 
 .toasts {
   position: fixed;
+  /* Top, not bottom: a message must not cover the Confirm button it is about. */
+  top: 72px;
   right: 16px;
-  bottom: 16px;
   left: 16px;
   display: grid;
   gap: 8px;
