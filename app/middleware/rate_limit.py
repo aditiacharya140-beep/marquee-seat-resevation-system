@@ -26,7 +26,9 @@ from app.core import security
 from app.core.config import settings
 from app.core.constants import (
     ACCESS_LOG_EXEMPT_PATHS,
+    INDEX_PATH,
     SCOPE_REQUEST_ID,
+    STATIC_URL_PREFIX,
     TOKEN_TYPE_BEARER,
     Header,
     RouteClass,
@@ -62,6 +64,8 @@ def classify(method: str, path: str) -> RouteClass | None:
     """From the method and path alone: this runs before routing, so that a throttled
     request costs a bucket check and nothing else."""
     if path in ACCESS_LOG_EXEMPT_PATHS:
+        return None
+    if path == INDEX_PATH or path.startswith(f"{STATIC_URL_PREFIX}/"):
         return None
     if path == "/auth/guest":
         return RouteClass.GUEST

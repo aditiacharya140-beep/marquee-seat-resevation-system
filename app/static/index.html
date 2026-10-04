@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Seat Reservation</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Seat Reservation</div>
+    <div class="account">
+      <span id="who" class="who"></span>
+      <button id="btn-signin" class="btn ghost" type="button">Sign in</button>
+      <button id="btn-register" class="btn" type="button">Register</button>
+      <button id="btn-signout" class="btn ghost" type="button" hidden>Sign out</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="side">
+      <section class="panel">
+        <h2>Shows</h2>
+        <p id="shows-empty" class="empty" hidden>No shows yet.</p>
+        <ul id="show-list" class="show-list"></ul>
+        <button id="btn-more-shows" class="btn ghost block" type="button" hidden>Load more</button>
+      </section>
+
+      <section id="admin-panel" class="panel" hidden>
+        <h2>New show</h2>
+        <form id="admin-form" class="form">
+          <label>Name
+            <input name="name" required maxlength="200" autocomplete="off">
+          </label>
+          <label>Price per seat
+            <input name="price" type="number" min="0" step="0.01" required>
+          </label>
+          <div class="form-row">
+            <label>Rows A to
+              <input name="last_row" required maxlength="1" pattern="[A-Za-z]" value="E">
+            </label>
+            <label>Seats per row
+              <input name="per_row" type="number" min="1" max="100" required value="10">
+            </label>
+          </div>
+          <p id="admin-preview" class="muted small"></p>
+          <button class="btn primary block" type="submit">Create show</button>
+        </form>
+      </section>
+    </aside>
+
+    <div class="main">
+      <section class="panel">
+        <p id="show-empty" class="empty">Pick a show to see its seats.</p>
+        <div id="show-view" hidden>
+          <div class="show-head">
+            <div>
+              <h2 id="show-name"></h2>
+              <p id="show-meta" class="muted"></p>
+            </div>
+            <dl id="show-counts" class="counts"></dl>
+          </div>
+
+          <div class="map-scroll">
+            <div class="map">
+              <div id="screen" class="screen"></div>
+              <div id="seat-map" class="seat-map"></div>
+            </div>
+          </div>
+
+          <ul class="legend" aria-label="Seat legend">
+            <li><span class="seat available" aria-hidden="true"></span>Available</li>
+            <li><span class="seat selected" aria-hidden="true"></span>Selected</li>
+            <li><span class="seat mine" aria-hidden="true"></span>Yours</li>
+            <li><span class="seat held" aria-hidden="true"></span>Held</li>
+            <li><span class="seat sold" aria-hidden="true"></span>Sold</li>
+            <li><span class="seat available tier" aria-hidden="true"></span>Own price</li>
+          </ul>
+
+          <div class="summary">
+            <div>
+              <div id="selection-line"></div>
+              <div id="limit-line" class="muted small"></div>
+            </div>
+            <div class="actions">
+              <button id="btn-hold" class="btn" type="button"></button>
+              <button id="btn-book" class="btn primary" type="button">Book now</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>My bookings</h2>
+        <p id="bookings-empty" class="empty">Nothing booked yet.</p>
+        <ul id="booking-list" class="booking-list"></ul>
+        <button id="btn-more-bookings" class="btn ghost block" type="button" hidden>Load more</button>
+      </section>
+    </div>
+  </main>
+
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+
+  <dialog id="auth-dialog" class="dialog">
+    <form id="auth-form" class="form">
+      <h2 id="auth-title"></h2>
+      <p id="auth-note" class="muted small"></p>
+      <label>Email
+        <input name="email" type="email" required autocomplete="email">
+      </label>
+      <label>Password
+        <input name="password" type="password" required maxlength="128">
+      </label>
+      <p id="auth-error" class="form-error" hidden></p>
+      <div class="actions">
+        <button id="auth-cancel" class="btn ghost" type="button">Cancel</button>
+        <button id="auth-submit" class="btn primary" type="submit"></button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>
