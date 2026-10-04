@@ -122,11 +122,11 @@ Nothing in the booking logic changes.
 
 ## Before this is useful on the live site
 
-The rate-limit setting on Render must be corrected first (`RATE_LIMIT_TRUSTED_PROXY_HOPS`, currently resolving every visitor to Render's internal address). With it wrong, all visitors share one sign-in and guest allowance, and a handful of people using the page at once would lock each other out.
+The rate-limit setting on Render had to be corrected first (`RATE_LIMIT_TRUSTED_PROXY_HOPS`): at its old value every visitor shared one sign-in and guest allowance. It is now 3, established by test (LEARN-019).
 
 ## Steps to ship
 
-1. Fix the Render setting above and confirm it with a test request.
+1. Fix the Render setting above and confirm it with a test request. Done (LEARN-019).
 2. Build the three files and the two small service changes on the `stage-4-frontend` branch.
 3. Run the test suite and try the page locally against a local database.
 4. Merge to `main`; Render redeploys.

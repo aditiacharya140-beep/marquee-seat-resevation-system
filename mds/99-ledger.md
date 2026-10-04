@@ -943,6 +943,19 @@ Locally there is no proxy and the socket peer is the client, so no test could ha
 
 **Consequences** A statement in 02–13 is a claim about the code and can be checked against it. This ledger is not rewritten: earlier entries describe what was decided at the time, and are superseded by later ones rather than edited.
 
+## LEARN-019 — On Render the client is three entries from the right of `X-Forwarded-For`
+
+**Date** 2026-10-05
+
+Completes LEARN-018, by test against the live service from one machine:
+
+| `RATE_LIMIT_TRUSTED_PROXY_HOPS` | Observed |
+|---|---|
+| 1 | 429s named `10.25.16.5` and `10.26.34.133` — the platform's internal proxies. Every client shared a bucket |
+| 2 | 700 requests in a few seconds against a ceiling of 300 per 10s: **none** limited. The resolved address differed per request, so every request had its own bucket and the limiter was in effect off |
+| 3 | 500 requests: 89 limited, each naming the machine's own public address. Repeated with a different forged `X-Forwarded-For` on every request: still limited, still the real address |
+
+**Implication** Both wrong values failed silently in opposite directions — one throttled everyone together, the other throttled no one — and neither is visible from a test suite, a health check or a passing burst. The value is recorded in `render.yaml` with how it was established. Between the deploy of the limiter and this fix, the live service's rate limiting was first shared across all clients and then ineffective.
 
 ## ADR-036 — The web page is three static files served by the service itself
 
@@ -952,4 +965,4 @@ Locally there is no proxy and the socket peer is the client, so no test could ha
 
 **Choice** `app/static/` holds `index.html`, `app.css` and `app.js`; `GET /` returns the page and `/static/*` its assets. No framework, no build step. Both paths are exempt from rate limiting, so loading the page spends none of the visitor's `read` allowance. A missing asset answers `ROUTE_NOT_FOUND` in the envelope (ADR-023 still holds). The plan and what was built are in `18-frontend.md`.
 
-**Consequences** One URL and one deployment; the image changes by three files. The page adds nothing to the booking logic and uses only existing endpoints. It polls `GET /shows/{id}` every four seconds per open tab, which is `read` traffic keyed by principal. Until `RATE_LIMIT_TRUSTED_PROXY_HOPS` is corrected on Render (LEARN-018), every visitor's guest issuance and sign-in share a few address buckets, so several people using the page at once can lock each other out.
+**Consequences** One URL and one deployment; the image changes by three files. The page adds nothing to the booking logic and uses only existing endpoints. It polls `GET /shows/{id}` every four seconds per open tab, which is `read` traffic keyed by principal. Guest issuance and sign-in are limited per client address, so the page depends on `RATE_LIMIT_TRUSTED_PROXY_HOPS` being right on Render; it is, as of LEARN-019.
