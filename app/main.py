@@ -25,6 +25,7 @@ from app.core.metrics import unhandled_exceptions_total
 from app.db.engine import database
 from app.middleware.access_log import AccessLogMiddleware
 from app.middleware.request_context import RequestContextMiddleware
+from app.services import auth_service
 
 logger = get_logger(__name__)
 
@@ -108,6 +109,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     logger.info(LogEvent.STARTUP, extra={"config": settings.redacted_summary()})
     await database.connect()
     try:
+        await auth_service.bootstrap_admin()
         yield
     finally:
         await database.close()

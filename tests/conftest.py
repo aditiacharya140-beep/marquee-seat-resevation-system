@@ -29,6 +29,7 @@ import sys
 from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import Any, Final
+from uuid import uuid4
 
 PROJECT_ROOT: Final = Path(__file__).resolve().parents[1]
 
@@ -87,6 +88,7 @@ from app.core.errors import ConflictError  # noqa: E402
 from app.core.logging import JsonFormatter, configure_logging  # noqa: E402
 from app.db.engine import database  # noqa: E402
 from app.main import create_app, lifespan  # noqa: E402
+from app.services import auth_service  # noqa: E402
 
 TEST_TIMEOUT_SECONDS: Final = float(os.environ.get("TEST_TIMEOUT_SECONDS", "15"))
 
@@ -325,3 +327,69 @@ def app_lifespan() -> Callable[[FastAPI], Any]:
 def resolved_settings() -> Any:
     return settings
 
+
+# --------------------------------------------------------------------------------------
+# Principals
+# --------------------------------------------------------------------------------------
+
+
+def bearer(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+async def admin_headers(client: httpx.AsyncClient) -> dict[str, str]:
+    await auth_service.bootstrap_admin()
+    response = await client.post(
+        "/auth/login",
+        json={
+            "email": settings.admin_email,
+            "password": settings.admin_password.get_secret_value(),
+        },
+    )
+    return bearer(response.json()["access_token"])
+
+
+@pytest.fixture
+def new_guest(client: httpx.AsyncClient) -> Callable[[], Any]:
+    """Each call is a distinct principal: `(user_id, headers)`."""
+
+    async def create() -> tuple[str, dict[str, str]]:
+        body = (await client.post("/auth/guest")).json()
+        return body["user_id"], bearer(body["access_token"])
+
+    return create
+
+
+@pytest.fixture
+def new_show(client: httpx.AsyncClient, admin_headers: dict[str, str]) -> Callable[..., Any]:
+    async def create(seats: list[str], **fields: Any) -> dict[str, Any]:
+        response = await client.post(
+            "/shows",
+            headers=admin_headers,
+            json={"name": "test-show", "seats": seats, "price_paise": 25000} | fields,
+        )
+        assert response.status_code == 201, response.text
+        return dict(response.json())
+
+    return create
+
+
+async def reserve(
+    client: httpx.AsyncClient,
+    show_id: str,
+    headers: dict[str, str],
+    seats: list[str],
+    *,
+    key: str | None = None,
+    **body: Any,
+) -> httpx.Response:
+    return await client.post(
+        f"/shows/{show_id}/reserve",
+        headers=headers | {"Idempotency-Key": key or uuid4().hex},
+        json={"seats": seats} | body,
+    )
+
+
+def error_code(response: httpx.Response) -> str | None:
+    return response.json().get("error", {}).get("code")
