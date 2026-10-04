@@ -195,15 +195,18 @@ fires whenever the product succeeds gets muted.
 
 The design ([mds/](mds/00-overview.md)) covers more than was built. Not built: the
 audit table and its writer (structured logs carry `request_id`, and every row is
-stamped with it), rate limiting, sale windows, and the latency/pool/lock-wait
-histograms. An unhandled exception is still logged twice, once without its request
+stamped with it), sale windows, and the latency/pool/lock-wait histograms. An unhandled exception is still logged twice, once without its request
 id. None of these touch the claim path.
 
-One consequence of the missing rate limit is worth stating plainly: the per-user limit
-is per *principal*, guest principals are free to create, and a reserve confirms with
-no payment step. So the limit stops one account over-buying; it does not stop one
-client minting accounts (RISK-014). A per-IP ceiling on guest issuance is the next
-thing to build.
+One limit of the design is worth stating plainly. The per-user seat limit is per
+*principal*, guest principals cost nothing to create, and a reserve confirms with no
+payment step — so on its own the limit stops one account over-buying, not one client
+minting accounts. Rate limiting now bounds that: reserve, read and admin routes are
+limited per principal (a crowd behind one address is never throttled as one), and
+guest creation is limited per client address, at one new guest a second sustained.
+That is a bound, not a cure. A patient client, or one with many addresses, can still
+accumulate seats; closing it properly takes something a guest cannot mint — a
+payment step, or a verified identity (RISK-014).
 
 ## AI usage
 

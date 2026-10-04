@@ -908,3 +908,18 @@ One `grill` round over the reserve, confirm, cancel and idempotency code, execut
 
 **Mitigation** Accepted. A minimum hold TTL above `DB_LOCK_TIMEOUT_MS` would close the first.
 
+## ADR-034 — Build the rate limiter; RISK-014 is bounded, not closed
+
+**Date** 2026-10-04
+
+**Context** The review made RISK-014 concrete: 2,500 guests minted from one client in seconds, each entitled to `per_user_limit` seats, with no payment step.
+
+**Choice** `RateLimitMiddleware` as specified in `07-middleware.md`: a monotonic token bucket per `(identity, route class)` in a bounded LRU, keyed by verified principal wherever a token is present and by client address for `auth` and `guest`. 429 carries `Retry-After` and the `X-RateLimit-*` headers in the standard envelope; `rate_limited_total{route_class}` counts it; `/readyz` reports whether limiting is on. Supersedes the rate-limiting line of ADR-032.
+
+Three departures from the document, each stated:
+- The `auth` class is keyed by address alone, not address and email: the email is in the body, and the limiter does not read bodies.
+- The client address is the entry `RATE_LIMIT_TRUSTED_PROXY_HOPS` from the **right** of `X-Forwarded-For`. The leftmost entry is whatever the client chose to send. A 429's details name the address the limit was applied to, so a wrong hop count is visible from outside as an internal address.
+- The deployment and the compose stack set `RATE_LIMIT_GUEST=600/600s` rather than the default `60/60s`. The sustained rate is the same, one a second; the bucket is deeper so the burst can mint its principals from one address.
+
+**Consequences** RISK-014 is bounded at one new guest per second per address, so `per_user_limit` seats per second per address — not closed. A payment step or a verified identity is what closes it. RISK-003 (per-instance buckets) now applies for real.
+

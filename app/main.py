@@ -25,6 +25,7 @@ from app.core.logging import configure_logging, get_logger, level_number
 from app.core.metrics import unhandled_exceptions_total
 from app.db.engine import database
 from app.middleware.access_log import AccessLogMiddleware
+from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.request_context import RequestContextMiddleware
 from app.services import auth_service
 
@@ -147,6 +148,9 @@ def create_app() -> FastAPI:
 
     # Registration order is the reverse of execution: the last added is outermost, so
     # request context is established before any other layer runs (mds/07-middleware.md).
+    # Innermost of the three, so a throttled request still gets its request id and its
+    # access-log line, and costs nothing beyond the bucket check.
+    app.add_middleware(RateLimitMiddleware)
     app.add_middleware(AccessLogMiddleware)
     app.add_middleware(RequestContextMiddleware)
 

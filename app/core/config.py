@@ -5,6 +5,7 @@ mirrors. Secrets have no default: a service that boots with a built-in signing k
 worse than one that refuses to boot.
 """
 
+import re
 from typing import Annotated, Any, Final
 from urllib.parse import urlsplit, urlunsplit
 
@@ -92,6 +93,10 @@ class Settings(BaseSettings):
     rate_limit_auth: str = "10/60s"
     rate_limit_guest: str = "60/60s"
     rate_limit_admin: str = "30/60s"
+    rate_limit_max_buckets: int = 100000
+    #: Proxies this deployment itself runs in front of the service. 0 ignores
+    #: X-Forwarded-For entirely and uses the socket peer.
+    rate_limit_trusted_proxy_hops: int = 1
 
     audit_enabled: bool = True
     audit_queue_max: int = 50000
@@ -187,6 +192,14 @@ class Settings(BaseSettings):
                 "is cancelled as a statement timeout before its lock timeout can fire, so every "
                 "hot-seat decline arrives as a 503 instead of a 409"
             )
+
+        for name in ("reserve", "read", "auth", "guest", "admin"):
+            value = getattr(self, f"rate_limit_{name}")
+            if not re.fullmatch(r"[1-9]\d*/[1-9]\d*s", value):
+                raise ValueError(
+                    f"RATE_LIMIT_{name.upper()} ({value}) must look like 120/10s: "
+                    "a request count, a slash, and a window in seconds"
+                )
 
         if self.default_event_kind not in self.allowed_event_kinds:
             raise ValueError(

@@ -150,11 +150,22 @@ async def create_show(run: Run, general: list[str], probe: list[str]) -> None:
 
 
 async def mint_guests(run: Run, count: int) -> list[str]:
+    waited = False
+
     async def one() -> str:
-        async with run.limiter:
-            response = await run.client.post("/auth/guest")
-        response.raise_for_status()
-        return str(response.json()["access_token"])
+        nonlocal waited
+        while True:
+            async with run.limiter:
+                response = await run.client.post("/auth/guest")
+            if response.status_code != 429:
+                response.raise_for_status()
+                return str(response.json()["access_token"])
+            # Guest issuance is limited per address, which is the control that stops
+            # one client minting principals without bound. A well-behaved client waits.
+            if not waited:
+                waited = True
+                print(f"guest issuance is rate limited; waiting as instructed ({count} to mint)")
+            await asyncio.sleep(float(response.headers.get("Retry-After", "1")))
 
     return list(await asyncio.gather(*(one() for _ in range(count))))
 
