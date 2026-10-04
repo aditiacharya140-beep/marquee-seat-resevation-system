@@ -16,7 +16,7 @@ Three regimes, with very different costs:
 
 Only the hot regime is fundamentally serial, and it is serial **by definition**: one seat has one winner, so determining that winner cannot be parallelized. The engineering goal is therefore not to parallelize it but to make each critical section as short as possible and to bound the queue.
 
-The critical section for a single-seat claim is one indexed update on one row. The queue drains at roughly the rate the database can commit that update. `lock_timeout` bounds the tail so a request at the back of a long queue declines cleanly rather than hanging, and `seat_claim_lock_wait_seconds` makes the depth observable.
+The critical section for a single-seat claim is one indexed update on one row. The queue drains at roughly the rate the database can commit that update. `lock_timeout` bounds the tail so a request at the back of a long queue declines cleanly rather than hanging; `reservations_declined_total{reason="lock_timeout"}` shows when that is happening.
 
 A seat that is contested is also, necessarily, a seat that will be gone in milliseconds. 499 of those 500 requests are going to be declined no matter how fast the system is. Spending complexity to decline them faster is spending it in the wrong place.
 
@@ -28,15 +28,16 @@ The reserve path, counted honestly:
 
 | Step | Round trips | Notes |
 |---|---|---|
-| Idempotency key claim (T1) | 1 | own transaction; required for correctness |
-| Quota row upsert + lock | 1 | combined statement |
+| Show read + idempotency key claim (T1) | 2 | one connection, no transaction; the claim commits at once |
+| Key row lock (T2 begins) | 1 | ownership check, ADR-033 |
+| Quota row upsert + lock | 2 | two statements |
 | Active-seat count | 1 | index-only scan, bounded rows |
 | Seat claim | 1 | the atomic decision |
 | Close superseded claim rows | 1 | ADR-019; served by `uq_seat_active_claim`, ≤ `per_user_limit` rows |
-| Reservation + seat links + key completion | 1 | multi-statement, one round trip |
-| **Total** | **~6** | two transactions |
+| Reservation, seat links, key completion | 3 | three statements |
+| **Total** | **~11** | two connections, one explicit transaction |
 
-Roughly six round trips, two transactions, one contended row lock held for one of them. The quota lock is held across the count and the claim, which is what makes the limit exact — a cost paid knowingly.
+About eleven round trips, counted from the code rather than estimated, and one contended row lock. Several are combinable; none has been, because nothing measured so far says the round trips are the bottleneck. The quota lock is held across the count and the claim, which is what makes the limit exact — a cost paid knowingly.
 
 The sixth step was added by ADR-019 and is unconditional. Making it conditional would require reading first to see whether there is anything to close, which is a read-then-write on exactly the state the claim just decided — the forbidden shape. An unconditional indexed update on at most `per_user_limit` rows is cheaper than the read that would avoid it.
 
@@ -52,12 +53,12 @@ This is where the "zero 5xx" requirement is won or lost, and it is arithmetic ra
 
 ```
 usable_connections   = db_max_connections − superuser_reserved − migration/admin headroom
-pool_per_instance    = usable_connections / instance_count − audit_writer_connection
+pool_per_instance    = usable_connections / instance_count − one kept back
 ```
 
 The pool is sized by what the **database** can serve, never by expected request concurrency. Postgres backends are processes; a pool larger than the database's ceiling converts a queue the application controls into refusals the application cannot control.
 
-Excess concurrency therefore queues **at the pool**, which is the right place for it: the wait is bounded by an acquire timeout, it is visible as `db_pool_waiting`, and a request that exceeds it returns 503 `DATABASE_UNAVAILABLE` — the single legitimate 5xx in the service. Keeping it at zero under a full-scale burst is a sizing exercise, and `db_pool_waiting` sustained above zero is the alert that precedes it.
+Excess concurrency therefore queues **at the pool**, which is the right place for it: the wait is bounded by an acquire timeout, and a request that exceeds it returns 503 `DATABASE_UNAVAILABLE` — the single legitimate 5xx in the service. Keeping it at zero under a full-scale burst is a sizing exercise, and `db_pool_waiting` sustained above zero is the alert that precedes it.
 
 A 20,000-request burst against a pool of, say, 20 means a queue roughly 1,000 deep. At ~6 round trips of a few milliseconds each, that drains in single-digit seconds. **The acquire timeout must exceed that drain time**, or correct requests are refused for a queue that was about to serve them. This is the one number most likely to produce a spurious 5xx under load, so it is configured generously and measured by the burst script.
 
@@ -66,6 +67,18 @@ That requirement cannot be a startup check, because drain time depends on burst 
 **Idempotency waiters do not contribute to the drain.** A duplicate request waiting on an `in_progress` key releases its connection between polls (ADR-026), so a wait budget costs round trips rather than connection-seconds. Before that fix, a few hundred concurrent duplicates would have held connections for the whole budget and produced the 503s ADR-016 forbids — the retry path taking the service down.
 
 ---
+
+## What has been measured
+
+Not the 20,000-request burst the design is sized for. What exists:
+
+| Run | Result |
+|---|---|
+| Local, one uvicorn worker, pool of 20, 500 requests in flight | 3,530 reserves in 9.6s; p50 0.8s, p95 3.1s; zero 5xx |
+| Reviewer's in-process hot seat, 2,500 principals on one seat | One 201, 2,499 × 409, no 503, 1.2s |
+| Live, Render free instance, 200 buyers + 80 on a hot seat | Every invariant held, zero 5xx; latency not recorded reliably |
+
+At 500 in flight against a pool of 20 the time is spent queueing for a connection and in one Python process, not waiting on row locks. Nothing has been profiled or tuned, and the acquire timeout has not been checked against the drain time of a full-scale burst.
 
 ## Horizontal scaling
 
@@ -79,8 +92,7 @@ What changes with N instances:
 | Connection pool | Divided by N. This is what bounds N, not CPU. |
 | Rate limiting | Per-instance, so the effective ceiling becomes N × configured. Accepted; see below. |
 | Expiry | Nothing to scale. It is a predicate arm inside the claim, so it runs exactly as often as a claim does and has no worker, no interval, and no leader election (ADR-017). |
-| Audit writer | One per instance with its own connection and its own queue. Independent and correct. |
-| Gauge refresher | Runs on every instance; each publishes its own view. Scraped per instance, aggregated by the collector. |
+| The availability gauge | Computed per scrape from the database, so every instance reports the same value. |
 
 **What breaks first as N grows is database connections, not application CPU.** The fix at that point is a connection pooler in transaction mode, not more instances. Beyond that, the next ceiling is write throughput on `seats`, and beyond that the architecture must change — sharding by show, since shows are perfectly independent. Noted as the real scaling axis, not built.
 
@@ -111,12 +123,10 @@ The honest trade: a database outage is a full booking outage. For assigned seati
 
 | Ceiling | Current limit | First symptom | Next step if hit |
 |---|---|---|---|
-| Hot-seat serialization | One winner per seat per commit | `seat_claim_lock_wait_seconds` p99 climbing toward `lock_timeout` | Inherent. Shorten the critical section; nothing else. |
-| Database connections | Postgres `max_connections` | `db_pool_waiting` above zero, then 503s | Connection pooler in transaction mode |
+| Hot-seat serialization | One winner per seat per commit | `lock_timeout` declines appearing | Inherent. Shorten the critical section; nothing else. |
+| Database connections | Postgres `max_connections` | Latency climbing, then 503 `DATABASE_UNAVAILABLE` — there is no earlier signal until the pool gauges exist | Connection pooler in transaction mode |
 | Seat write throughput | Primary's commit rate | Latency rise across all claims | Shard by show |
-| Audit insert rate | Batched writer throughput | `audit_queue_depth` climbing, then drops | Larger batches, then table partitioning |
-| `audit_log` growth | Linear in traffic | Index bloat, slow queries | Partition by `occurred_at` + retention |
-| `idempotency_keys` growth | One row per reserve that won its key | Row count and table size climbing with no purge running | Scheduled `purge_expired` maintenance; RISK-007 |
+| `idempotency_keys` growth | One row per reserve that won its key | Row count and table size climbing with no purge running | The retention query in the runbook, run by hand until it is scheduled; RISK-007 |
 | Lapsed-hold rows left open | One per hold that lapsed and whose seat was never re-claimed | A raw count of `released_at IS NULL` exceeding real active claims | The same deferred cleanup job; readers derive effective status and are unaffected |
 | Show creation | One multi-row insert for N seats | Slow `POST /shows` for very large halls | `COPY` for very large seat sets |
 | Metric cardinality | Per-show gauges | `/metrics` response size and memory | Already capped to recently active shows |

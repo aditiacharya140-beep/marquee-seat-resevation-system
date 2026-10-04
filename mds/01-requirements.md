@@ -1,6 +1,6 @@
 # Requirements
 
-Each requirement is numbered, testable, and traced to a test. A requirement with no passing test is not satisfied, whatever the code looks like.
+Each requirement is numbered, testable, and traced to a test. A requirement with no passing test is not satisfied, whatever the code looks like. The traceability table at the end is the current state: three requirements are partly met and one is not built.
 
 Priority: **M** must, **S** should, **C** could.
 Audience: who may invoke — `admin`, `user`, `guest`, `system`.
@@ -33,7 +33,7 @@ A missing, malformed, expired, or wrongly signed token returns 401 `UNAUTHENTICA
 When a `user` or `guest` token calls an admin route, then 403 `FORBIDDEN` is returned and no state changes. Verified per admin route, not once.
 
 **REQ-008** `M` `user` — Refresh an access token.
-Given a valid refresh token, `POST /auth/refresh` returns a new access token. A refresh token that has been revoked or rotated returns 401.
+Given a valid refresh token, `POST /auth/refresh` returns a new access token. An expired, tampered or wrong-type token returns 401. Refresh is stateless, so there is no revocation: that is future scope.
 
 ---
 
@@ -51,8 +51,8 @@ Duplicate labels in `seats[]`, an empty `seats[]`, a non-integer or negative `pr
 **REQ-013** `M` `system` — Reconciliation invariant.
 At every instant, including during a burst, `available + held + confirmed == total_seats` for every show. Verified by sampling `GET /shows/{id}` concurrently with load, not only after it.
 
-**REQ-014** `C` `user` — List shows. **Deferred (ADR-015)** — nothing depends on it; revisit after Stage 7.
-`GET /shows` returns a paginated summary with availability counts. Page size is configured, not hardcoded, and bounded.
+**REQ-014** `C` `user` — List shows.
+`GET /shows` returns a keyset-paginated summary, newest first. Page size is configured, not hardcoded, and bounded. It carries **no** availability counts: a list of shows must not scan every seat of every show, and exact availability is `GET /shows/{id}`.
 
 ---
 
@@ -144,7 +144,7 @@ A seat released by cancel or expiry can be reserved by any principal with no res
 **REQ-041** `M` `system` — Readiness fails closed.
 `GET /readyz` executes a real query against the database. With the database unreachable it returns 503 with the failing dependency named. It never reports ready on a cached result.
 
-**REQ-042** `M` `system` — Metrics.
+**REQ-042** `M` `system` — Metrics. **Partly met:** the counters, the availability gauge and `unhandled_exceptions_total` are exposed; the latency histogram, `db_pool_waiting`, the lock-wait histogram and the audit series are not ([17-future-scope.md](17-future-scope.md), item 4).
 `GET /metrics` exposes Prometheus text format including: reservations confirmed (counter), reservations declined by reason (counter, labelled `seat_taken` / `per_user_limit` / `idempotent_replay` / `show_not_on_sale` / `lock_timeout`), seats available (gauge, labelled by show), request latency (histogram by route and status), audit queue depth and drops, and three operational series without which other requirements cannot be verified: `unhandled_exceptions_total` (the direct measurement of REQ-048), `db_pool_waiting` (the precursor to a 503), and `seat_claim_lock_wait_seconds` (hot-seat contention approaching `lock_timeout`).
 
 **REQ-043** `M` `system` — Metrics reconcile.
@@ -156,7 +156,7 @@ Every request is assigned a UUID request id — taken from `X-Request-ID` when i
 **REQ-045** `M` `system` — Structured logs.
 Every log line is single-line JSON with `ts`, `level`, `event`, `request_id`. No secrets, tokens, or password material is ever logged.
 
-**REQ-046** `M` `system` — Audit without backpressure.
+**REQ-046** `M` `system` — Audit without backpressure. **Not built — [17-future-scope.md](17-future-scope.md), item 2.**
 Every request is recorded to an audit table through a bounded in-memory queue drained by a batched writer. The request path never blocks on the audit write. Queue saturation drops records, increments a drop counter, and does not degrade request handling.
 
 **REQ-047** `M` `system` — Rate limiting.
@@ -221,8 +221,8 @@ Every monetary value is an integer count of paise, stored as `BIGINT`, transport
 
 Non-blocking; each carries a working default so no stage stalls.
 
-1. **Admin bootstrap** — how does the first admin exist? Default: seeded from env credentials at startup, created only if absent, with a loud log line.
-2. **Refresh-token revocation** — stored and revocable, or short-lived and stateless? Default: stateless with a short lifetime; add a revocation table only if a requirement needs it.
+1. **Admin bootstrap** — **resolved, built:** seeded from env credentials at startup, created only if absent, with a loud log line.
+2. **Refresh-token revocation** — **built stateless**; a revocation list is future scope.
 3. **Admin override on cancel** — may an admin cancel another principal's hold? Default: no route exists until asked for.
 4. **Seat-level pricing tiers** — `seats.price_paise` nullable and inheriting the show price is already in the schema; tier naming and a tier table are deferred until a requirement needs them.
 5. **Guest token lifetime versus hold TTL** — **resolved.** `GUEST_TOKEN_TTL_SECONDS > MAX_HOLD_TTL_SECONDS`, validated at startup (ADR-031, and stated as an acceptance clause on REQ-003). `MAX_HOLD_TTL_SECONDS` is the right quantity because it is the longest hold the service will ever issue; there is no single "the hold TTL" to add a margin to. The check is necessary, not sufficient — a token minted shortly before a maximum-length hold can still lapse first — and that residual is RISK-006, not something a startup check can see. It costs the guest one retry and loses no seat, which is why it is accepted rather than fixed by coupling the claim path to token internals.

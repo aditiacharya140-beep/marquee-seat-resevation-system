@@ -52,6 +52,9 @@ Recorded honestly, because several materially improved the design and two preven
 | *"We should not under-deliver"* | **Prevented** cutting four things an external review wanted gone — refresh tokens, guest upgrade, sale windows, tiered pricing. The review had optimised for the specification and missed the project's own requirements |
 | *"Reason with me and then perform"* | Stopped a delegation mid-flight. The reasoning that followed produced a **better** answer than the one already recommended: holds with lazy expiry and **no sweeper worker**, because the sweeper's only job was making stored state match reality and effective status is derived on read anyway |
 | *"Should we keep holds as well?"* | Turned a binary into the right design: `confirmed` as the default path, holds available opt-in. Keeps all three seat states genuinely reachable while removing the second-winner risk from the path that load actually exercises. ADR-017 |
+| *"This is alarming"*, on reading that guests made the seat limit bypassable | Rate limiting, cut for the deadline, was built the same hour — and the write-up says plainly that it narrows the loophole rather than closing it |
+| *"Should we remove guests completely?"* | Kept, after the reasoning: registration is exactly as free as a guest, so removing guests deletes a tested feature without closing anything |
+| *"Sync the mds with our codebase"* | The design set now describes what is built, with one document for what is not (ADR-035) |
 | *"Reason with me"* on the list endpoint | Surfaced that a performance guarantee in the repository contract — *"never scans seats, reads precomputed counts"* — was unsupported by the schema. There were no such counts, and the only way to create them was the denormalised tally already rejected. Would have shipped as an inconsistency |
 
 The pattern worth naming: **every instance of being asked to reason before acting produced a better design than acting would have.** Twice it corrected a recommendation already on the table.
@@ -124,6 +127,11 @@ Two patterns are worth carrying forward. **Writing the correctness argument down
 
 | Item | Status |
 |---|---|
-| Ten gaps from the requirements decomposition | Each carries a recommendation and a stage by which to resolve it; none blocks progress |
-| Double log line on unhandled exception | Both lines are JSON; one lacks a request id. Accepted noise or a different catch-all placement — pending |
-| `event_kind` as enum versus config-validated | Two documents disagree; the enum is implemented. Pending resolution |
+| The per-user limit is per principal, and guests are free | Bounded by rate limiting, not closed. A payment step or verified identity is what closes it (RISK-014) |
+| The proxy-hop count on the live deployment | Found wrong by reading a live 429: the limiter was seeing the platform's internal address. Needs the right value set and verified (LEARN-018) |
+| Only the claim path has been adversarially reviewed | Auth, shows and the rate limiter have tests and no review |
+| CI has never run | GitHub Actions is not enabled for the repository |
+| Double log line on an unhandled exception | Both lines are JSON; one lacks a request id. The designed fix is an exception-boundary middleware |
+| The full-scale burst | Run live at 200 buyers only |
+
+Everything else that is designed and unbuilt is in [17-future-scope.md](17-future-scope.md).

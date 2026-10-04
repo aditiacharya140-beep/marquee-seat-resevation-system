@@ -15,7 +15,7 @@ Every response, success or failure, carries `X-Request-ID`. Every failure uses t
 | `POST` | `/auth/refresh` | user, admin | no | `auth` | `auth.py` |
 | `GET` | `/auth/me` | any principal | yes | `read` | `auth.py` |
 | `POST` | `/shows` | admin | key optional | `admin` | `shows.py` |
-| `GET` | `/shows` | public | yes | `read` | *deferred, ADR-015* |
+| `GET` | `/shows` | public | yes | `read` | `shows.py` |
 | `GET` | `/shows/{show_id}` | public | yes | `read` | `shows.py` |
 | `POST` | `/shows/{show_id}/reserve` | any principal | **key required** | `reserve` | `reservations.py` |
 | `POST` | `/reservations/{id}/confirm` | owner | yes | `reserve` | `reservations.py` |
@@ -157,18 +157,16 @@ A `held` seat arises only from a reserve that opted into a hold; a default reser
 
 `404 SHOW_NOT_FOUND`
 
-### `GET /shows` — deferred (ADR-015)
-
-Not built. Nothing depends on a paginated catalogue, and deferring it keeps the cursor codec off the critical path. Shape when it lands:
-
+### `GET /shows`
 
 Query: `limit`, `cursor`, `status`, `event_kind`. **200**
 ```json
-{ "items": [ { "show_id": "…", "name": "…", "status": "on_sale",
-               "counts": { "available": 120, "held": 4, "confirmed": 76, "total": 200 } } ],
+{ "items": [ { "show_id": "…", "name": "…", "event_kind": "cinema", "status": "on_sale",
+               "price_paise": 25000, "currency": "INR", "total_seats": 200,
+               "created_at": "2026-10-03T12:00:00Z" } ],
   "next_cursor": "…|null" }
 ```
-Keyset pagination on `(created_at, id)`. `limit` is bounded by config. Seat detail is omitted deliberately — a list of shows must not scan every seat of every show.
+Newest first, keyset-paginated on the immutable `(created_at, id)`, so paging through a catalogue that is being booked neither skips nor repeats a show. `limit` is bounded by `PAGE_SIZE_MAX`. **No availability counts and no seat detail** — a list of shows must not scan every seat of every show; `GET /shows/{id}` is the exact source. A malformed cursor is 422.
 
 ---
 
@@ -231,7 +229,7 @@ Authenticated. Idempotency key **required**, from the `Idempotency-Key` header o
 | 409 | `SHOW_NOT_ON_SALE` | show is `draft` or `closed`, or outside its sale window |
 | 404 | `SHOW_NOT_FOUND` / `SEAT_NOT_FOUND` | unknown show, or a label not in this show |
 | 422 | `VALIDATION_ERROR` | no key, key too long, empty or duplicated labels, more labels than the limit |
-| 429 | `RATE_LIMITED` | ceiling exceeded; `Retry-After` |
+| 429 | `RATE_LIMITED` | this principal's ceiling exceeded; `Retry-After`, `X-RateLimit-*`, `details.route_class` |
 | 401 | `UNAUTHENTICATED` | missing or invalid token |
 
 ### Idempotency behaviour a client must code against
@@ -266,7 +264,7 @@ Only a `held` reservation is confirmable through this route; a reserve with no `
 
 ### `POST /reservations/{id}/cancel` — owner only
 
-**200** `{ "reservation_id": "…", "status": "cancelled", "seats": ["A12","A13"], "cancelled_at": "…" }`
+**200** — the reservation, as below, with `"status": "cancelled"` and `cancelled_at`.
 
 Idempotent. Releases held seats to `available` and closes their claim rows; the seats are immediately re-bookable.
 
@@ -276,7 +274,7 @@ Idempotent. Releases held seats to `available` and closes their claim rows; the 
 
 ### `GET /reservations`
 
-Query: `show_id`, `status`, `limit`, `cursor`. Returns only the principal's own reservations, keyset-paginated.
+Query: `show_id`, `status`, `limit`, `cursor`. Returns only the principal's own reservations, newest first, keyset-paginated: `{ "items": [ … ], "next_cursor": "…|null" }`. `status` filters on the **effective** status, so a lapsed hold is found under `expired`.
 
 ### `GET /reservations/{id}`
 
@@ -295,11 +293,13 @@ Touches no dependency. Always 200 while the process is alive.
 
 **200**
 ```json
-{ "status": "ready", "checks": { "database": { "ok": true, "latency_ms": 3 } } }
+{ "status": "ready", "rate_limit_enabled": true,
+  "checks": { "database": { "ok": true, "latency_ms": 3 } } }
 ```
 **503**
 ```json
-{ "status": "not_ready", "checks": { "database": { "ok": false, "error": "connection refused" } } }
+{ "status": "not_ready", "rate_limit_enabled": true,
+  "checks": { "database": { "ok": false, "error": "ConnectionRefusedError" } } }
 ```
 Executes a real query. Fails closed, never from a cached result.
 

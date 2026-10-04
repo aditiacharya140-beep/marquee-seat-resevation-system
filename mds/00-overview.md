@@ -32,8 +32,8 @@ These are settled. Each is argued in its own document and recorded as an ADR in 
 | Idempotency | `(user_id, key)` unique; the fingerprint carries operation and show id; only successes are stored, a decline releases the key; every replay answers 200 (ADR-020/021/029) |
 | Framework failures | Unmatched routes and bad methods answer inside the error envelope, not Starlette's default shape (ADR-023) |
 | Guests | Real user rows flagged `is_guest`, token-derived like any principal, upgradeable |
-| Rate limiting | Per-principal, generous on the reserve path, every ceiling env-tunable |
-| Audit | Bounded async queue, batched writer, never blocks a request |
+| Rate limiting | Per-principal wherever a token exists, per client address only for sign-in and guest creation; every ceiling env-tunable (ADR-034) |
+| Key ownership | The idempotency key row's id is the ownership token: a stale takeover rotates it and the claim locks it first (ADR-033) |
 
 ## Document map
 
@@ -45,17 +45,22 @@ These are settled. Each is argued in its own document and recorded as an ADR in 
 | [04-concurrency-and-atomicity.md](04-concurrency-and-atomicity.md) | The atomic claim, lock ordering and deadlock argument, per-user limit, idempotency lifecycle, holds and expiry, reconciliation |
 | [05-auth-and-rbac.md](05-auth-and-rbac.md) | Token design, guest and upgrade flow, password policy, roles and permission matrix, `Depends` wiring, threat notes |
 | [06-apis.md](06-apis.md) | Every endpoint: method, path, audience, request, response, status and error codes, idempotency and rate-limit behaviour |
-| [07-middleware.md](07-middleware.md) | Chain order and rationale, request-id propagation, rate limiter design, audit enqueue, metrics capture |
+| [07-middleware.md](07-middleware.md) | Chain order and rationale, request-id propagation, the access log, the rate limiter |
 | [08-error-logging.md](08-error-logging.md) | `AppError` hierarchy, the error-code registry, response envelope, structured log schema, what is logged at which level |
 | [09-repositories.md](09-repositories.md) | Repository contracts per aggregate, SQL ownership, driver-error translation, pooling, `request_id` stamping |
-| [10-observability.md](10-observability.md) | Health and readiness semantics, metric catalogue, audit table and async write path, trace correlation, alerting |
+| [10-observability.md](10-observability.md) | Health and readiness semantics, the metrics that are exposed, alerting from signals that exist |
 | [11-scalability.md](11-scalability.md) | Contention model, pool sizing, horizontal scaling and what breaks first, partition behaviour, known ceilings |
 | [12-testing-and-burst.md](12-testing-and-burst.md) | Test strategy by layer, concurrency test design, burst script contract and output format |
 | [13-deployment.md](13-deployment.md) | Container build, Render topology, configuration and secrets, cold start handling, rollback, operational runbook |
-| [14-stage-plan.md](14-stage-plan.md) | Build stages with entry and exit gates, current status |
-| [15-tickets.md](15-tickets.md) | The ticket board: every requirement decomposed, with dependencies, observable `Done when` checks and a named proving test |
+| [14-stage-plan.md](14-stage-plan.md) | Build stages, what is built, tested and reviewed in each, and what to do next |
+| [15-tickets.md](15-tickets.md) | The original ticket board, with a status table at the top. Its `Done when` lines predate several ADRs and are not the authority where they disagree |
 | [16-decision-highlights.md](16-decision-highlights.md) | Curated record of the judgment calls and the defects caught before shipping, with provenance |
+| [17-future-scope.md](17-future-scope.md) | Everything designed or found to be needed that is **not** in the code |
 | [99-ledger.md](99-ledger.md) | Append-only `ADR` / `LEARN` / `RISK` log |
+
+## What this set describes
+
+Documents 02 to 13 describe the service **as it is built and deployed**. Anything designed and not built — the audit trail, part of the metric catalogue, sale windows — lives in [17-future-scope.md](17-future-scope.md) and nowhere else, so a statement in the other documents is a statement about the code (ADR-035).
 
 ## Invariants
 
@@ -71,4 +76,4 @@ Five statements that must hold at all times. Any code that can violate one is wr
 
 New to the project: this document, then [02-architecture.md](02-architecture.md), then [04-concurrency-and-atomicity.md](04-concurrency-and-atomicity.md) — the last one is where the service earns or loses its claim to correctness.
 
-Picking up work: [15-tickets.md](15-tickets.md) for what to build next, and [16-decision-highlights.md](16-decision-highlights.md) for why the design looks the way it does rather than the way it first did.
+Picking up work: [14-stage-plan.md](14-stage-plan.md) and [17-future-scope.md](17-future-scope.md) for what to build next, and [16-decision-highlights.md](16-decision-highlights.md) for why the design looks the way it does rather than the way it first did.

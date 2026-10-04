@@ -184,7 +184,7 @@ def test_a_pool_wider_than_the_server_ceiling_is_refused(
     assert "DB_SERVER_MAX_CONNECTIONS" in message
 
 
-def test_the_pool_ceiling_reserves_the_audit_writers_connection(
+def test_the_pool_ceiling_keeps_one_connection_back(
     env: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ceiling = 40 - RESERVED_NON_POOL_CONNECTIONS

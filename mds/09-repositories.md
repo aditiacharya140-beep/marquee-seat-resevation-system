@@ -1,137 +1,129 @@
 # Repositories
 
-Every SQL statement in the service lives in `app/repositories/`. One module per aggregate. No SQL anywhere else — not in a service, not in a route, not in a helper, not in a test fixture that bypasses the layer.
+Every SQL statement the service issues lives in `app/repositories/`, one module per aggregate. Tests are the one exception: a few assert what the database *refuses*, and say so.
 
 ## Contract
 
-A repository method:
+A repository function:
 
-- Receives a connection or transaction handed to it by the caller. It **never** opens, commits, or rolls back one. Transaction boundaries belong to services, because only a service knows which statements must succeed or fail together.
-- Takes and returns domain objects or plain values, never Pydantic request models and never `Request`.
-- Translates driver exceptions into `AppError` subclasses before returning, per the table in [08-error-logging.md](08-error-logging.md).
-- Stamps `request_id` from the context var on every insert and every update, without receiving it as a parameter.
-- Uses bound parameters exclusively. No f-string interpolation into SQL, ever, including for identifiers and `LIMIT` values.
+- **Receives a connection** from the caller. It never opens, commits or rolls back a transaction. Transaction boundaries belong to services, because only a service knows which statements must succeed or fail together.
+- Takes and returns plain values and the dataclasses in `domain/models.py`, never a request model and never a `Request`.
+- **Translates driver exceptions** into `AppError` subclasses before returning ([08-error-logging.md](08-error-logging.md)).
+- **Stamps `request_id`** from the context var on the rows it writes, without receiving it as a parameter (`base.current_request_id`).
+- Binds every value as a parameter. Statements are composed only from the module constants in `db/sql.py`, at import time; a value is never interpolated.
 
 ## Why services own transactions
 
-The reserve path is correct only because a specific set of statements is atomic: the quota lock, the limit check, the seat claim, the reservation insert, and the idempotency completion. If `seat_repo.claim` opened its own transaction, that set would fragment and a failure between two of them would leave seats held with no reservation. The repository exposes the statement; the service decides what it is atomic with.
+The reserve path is correct only because one specific set of statements is atomic: the key lock, the quota lock, the limit check, the seat claim, the superseded-row closure, the reservation insert and the key completion. If `claim_many` opened its own transaction that set would fragment, and a failure between two of them would leave seats claimed with no reservation.
 
 ## Modules
 
 ### `base.py`
 
-Shared mechanics, not a generic CRUD abstraction: `request_id` stamping, driver-error translation, row-to-model mapping, a cursor codec for keyset pagination, and a helper for `RETURNING`-based row-count decisions.
+`current_request_id()`, and `contention_is_a_decline()` — a context manager that turns `lock_not_available` and `deadlock_detected` into 409 `SEAT_TAKEN`. It wraps **every** statement on the reserve, confirm and cancel paths that can wait on a row lock, not only the claim: an unwrapped one turns a slow neighbour into a 500 (LEARN-017).
 
-Deliberately not a generic `Repository[T]` with `get/list/create/update/delete`. The interesting operations here — a guarded claim, an ordered multi-row CTE, a derived limit count — are not CRUD, and forcing them through a generic interface obscures exactly the detail the design depends on.
+Deliberately not a generic `Repository[T]`. The interesting operations here are not CRUD, and forcing them through a generic interface would hide exactly the detail the design depends on.
 
 ### `user_repo.py`
 
 ```
-create_user(email, password_hash, role)       -> User
-create_guest()                                -> User
-get_by_email(email)                           -> User | None
-get_by_id(user_id)                            -> User | None
-upgrade_guest(user_id, email, password_hash)  -> User | None
-admin_exists()                                -> bool
+create_user(conn, email, password_hash, role)        -> User
+create_guest(conn)                                    -> User
+upgrade_guest(conn, user_id, email, password_hash)    -> User | None
+get_by_email(conn, email)                             -> User | None
+get_by_id(conn, user_id)                              -> User | None
+admin_exists(conn)                                    -> bool
 ```
 
-`get_by_email` lowercases to match `uq_users_email`. `upgrade_guest` is the guarded update from [05-auth-and-rbac.md](05-auth-and-rbac.md) and returns `None` when the row was not a guest, letting the service distinguish `ALREADY_REGISTERED` from a missing user. Email collisions surface as `EMAIL_TAKEN` from the unique constraint, never from a prior existence check.
+Email uniqueness is the index's decision, never a prior existence check: a duplicate surfaces as 409 `EMAIL_TAKEN` from `uq_users_email`. `upgrade_guest` is one guarded `UPDATE ... WHERE id = $1 AND is_guest = true`, so two concurrent upgrades have one winner and `None` means the row was not a guest.
 
 ### `show_repo.py`
 
 ```
-create_show(show, seats)            -> Show      # show + all seat rows, one transaction
-get_show(show_id)                   -> Show | None
-get_show_for_sale(show_id)          -> Show | None
-get_counts(show_id)                 -> SeatCounts
-list_seats(show_id)                 -> list[Seat]
+create_show(conn, *, name, …, labels, seat_prices, seat_sections)  -> Show
+get_show(conn, show_id)                                            -> Show | None
+list_shows(conn, *, status, event_kind, after, limit)              -> list[Show]
+list_seats(conn, show)                                             -> list[SeatView]
+available_by_show(conn, max_shows)                                 -> dict[UUID, int]
 ```
 
-`create_show` inserts seats with one multi-row statement — a loop of inserts for a 2,000-seat hall is 2,000 round trips. `get_counts` is the single-snapshot query from [03-data-model.md](03-data-model.md), which is what makes the reconciliation invariant hold by construction. `currency` and `event_kind` are always supplied by the caller, never defaulted by the column, so there is one source for each (ADR-025). The paginated `list_shows` is deferred (ADR-015); nothing depends on it, so the cursor codec is not built yet.
+`create_show` inserts every seat in one statement from `unnest` arrays. `list_seats` returns every seat with its **effective** status from one statement; the counts in `GET /shows/{id}` are tallied from those same rows, which is why they cannot disagree with the seat list or fail to sum to the total. `list_shows` is keyset-paginated on `(created_at, id)` and never touches `seats`. `available_by_show` feeds the gauge at scrape time, using the claim's own predicate.
 
 ### `seat_repo.py`
 
 The most important module in the service.
 
 ```
-claim_one(conn, show_id, label, user_id, reservation_id, ttl_or_none, show_price)   -> ClaimedSeat | None
-claim_many(conn, show_id, labels, user_id, reservation_id, ttl_or_none, show_price) -> list[ClaimedSeat]
-count_active_for_user(conn, show_id, user_id)                                      -> int
-release_for_reservation(conn, reservation_id)                                      -> list[str]
-confirm_for_reservation(conn, reservation_id)                                      -> list[str]
-labels_not_in_show(conn, show_id, labels)                                          -> list[str]
+lock_quota(conn, user_id, show_id)                                      -> None
+count_active_for_user(conn, show_id, user_id)                           -> int
+claim_many(conn, *, show_id, labels, user_id, reservation_id,
+           ttl_or_none, show_price_paise)                               -> list[ClaimedSeat]
+labels_not_in_show(conn, show_id, labels)                               -> list[str]
+release_for_reservation(conn, reservation_id)                           -> list[str]
+confirm_for_reservation(conn, reservation_id)                           -> list[str]
 ```
 
-`ttl_or_none` is the **one** parameter that selects the target state: `None` means claim straight to `confirmed` with no expiry, an integer means hold for that many seconds (ADR-017). The statement derives both `status` and `hold_expires_at` from it, so the two cannot be passed inconsistently. The parameter name says so, because `ttl=None` reading as "no TTL, so use a default" is exactly the misreading that would reintroduce holds everywhere.
+`ttl_or_none` is the **one** parameter that selects the target state: `None` claims straight to `confirmed` with no expiry, an integer holds for that many seconds (ADR-017). The statement derives both `status` and `hold_expires_at` from it, so the two cannot be passed inconsistently.
 
-`claim_one` returns `None` on zero rows affected — the decline. `claim_many` returns whatever it claimed and the **service** compares the count to the request and rolls back; the repository does not decide policy, it reports what the statement did.
+`claim_many` returns what it claimed; the **service** compares the count to the request and rolls back. A single-seat request goes through the same statement — there is no separate `claim_one`. `labels_not_in_show` is diagnosis after a shortfall, to tell 404 from 409; it is never part of the decision.
 
-`release_for_reservation` and `confirm_for_reservation` are the ordered `FOR UPDATE` CTEs from ADR-022, guarded on `reservation_id` **and** `hold_expires_at > now()`, with `ORDER BY label`. They are not plain `UPDATE ... WHERE reservation_id = $1` statements: that form locks in scan order and put cancel outside the deadlock proof, and it omitted the expiry guard, which with lazy-only expiry meant a lapsed hold stayed promotable.
+`release_for_reservation` and `confirm_for_reservation` are the ordered `FOR UPDATE` CTEs of ADR-022, guarded on `reservation_id` **and** `hold_expires_at > now()`, with `ORDER BY label`.
 
-`sweep_expired` does not exist. There is no sweeper (ADR-017).
-
-Every statement here is quoted verbatim in [04-concurrency-and-atomicity.md](04-concurrency-and-atomicity.md). They are the same text. A change to one is a change to the other, in the same commit.
-
-Both effective-status expressions are imported from `db/sql.py`. Neither is retyped in this module, because a second copy that drifts breaks reconciliation.
+There is no `sweep_expired`. There is no sweeper (ADR-017).
 
 ### `reservation_repo.py`
 
 ```
-create(conn, reservation, seats)                            -> Reservation
-close_superseded_claims(conn, seat_ids)                     -> int
-get_owned(conn, reservation_id, user_id)                    -> Reservation | None
-confirm_owned(conn, reservation_id, user_id)                -> Reservation | None
-cancel_owned(conn, reservation_id, user_id)                 -> Reservation | None
-close_claims_for_reservation(conn, reservation_id)          -> int
-list_for_user(conn, user_id, filters, cursor, limit)        -> Page[Reservation]
+close_superseded_claims(conn, seat_ids)                       -> int
+create(conn, *, reservation_id, show_id, user_id, seats, …)   -> Reservation
+get_owned(conn, reservation_id, user_id)                      -> Reservation | None
+list_for_user(conn, user_id, *, show_id, status, after, limit)-> list[Reservation]
+cancel_owned(conn, reservation_id, user_id)                   -> bool
+confirm_owned(conn, reservation_id, user_id)                  -> bool
+close_claims_for_reservation(conn, reservation_id)            -> None
 ```
 
-`get_owned` takes the owner as part of the `WHERE` clause. There is no `get(reservation_id)` to accidentally use without an ownership filter — the unsafe method does not exist, which is stronger than remembering to filter. It applies the reservation effective-status expression, so a lapsed hold is returned as `expired`, never as `held`.
+`get_owned` and `list_for_user` take the owner as part of the `WHERE` clause. There is no `get(reservation_id)` to accidentally use without an ownership filter — the unsafe method does not exist, which is stronger than remembering to filter. Both apply the reservation effective-status expression, so a lapsed hold reads `expired`, never `held`.
 
-`confirm_owned` and `cancel_owned` are the guarded `UPDATE`s on the `reservations` row from ADR-022: owner and `status='held' AND hold_expires_at > now()` in the `WHERE` clause, returning the row or `None`. They replace `mark_confirmed(conn, reservation_id)` and `mark_cancelled(conn, reservation_id)`, which took no owner — a signature that made the ownership check something a service had to remember rather than something the statement enforced. `None` is the decision; the service then calls `get_owned` to choose the decline code, which is diagnosis and not control (ADR-022).
+`cancel_owned` and `confirm_owned` are the guarded `UPDATE`s on the `reservations` row: owner, `status = 'held'` and `hold_expires_at > now()` in the `WHERE` clause. `False` is the decision; the service then calls `get_owned` to choose the decline code, which is diagnosis and not control.
 
-`close_superseded_claims` is Mechanism 3 (ADR-019): it closes any active `reservation_seats` row for the given seat ids, called **after** the claim and **before** the insert, in T2. It returns the number of rows closed, which the service turns into `superseded_claims_closed_total`. It must never be folded into the insert's statement — LEARN-009 explains why.
-
-`mark_expired` does not exist. Nothing rewrites a lapsed hold's stored status; readers derive it.
+`close_superseded_claims` is Mechanism 3 (ADR-019): called **after** the claim and **before** the insert, in T2. It must never be folded into the insert's statement (LEARN-009).
 
 ### `idempotency_repo.py`
 
 ```
-try_claim(key, user_id, scope, fingerprint)       -> ClaimOutcome   # own | existing row
-get(user_id, key)                                 -> IdemKey | None
-complete(conn, key_id, status_code, response_body, reservation_id) -> None
-release(key_id)                                   -> None
-reclaim_if_stale(user_id, key, fingerprint, max_age) -> ClaimOutcome
-purge_expired(batch_size)                         -> int
+try_claim(conn, *, user_id, key, scope, fingerprint, retention_hours)  -> UUID | None
+get(conn, user_id, key, stale_seconds)                                 -> IdempotencyRecord | None
+reclaim_if_stale(conn, key_id, stale_seconds)                          -> UUID | None
+lock_owned(conn, key_id)                                               -> bool
+complete(conn, *, key_id, status_code, response_body, reservation_id)  -> None
+release(conn, key_id)                                                  -> None
 ```
 
-Three signatures carry an argument, and the argument is the reason for the signature:
+Which transaction each runs in is the whole point of the module:
 
-- `try_claim` takes **no connection**: it runs in its own transaction, because ownership must be visible to concurrent duplicates immediately.
-- `complete` **takes a connection**: it must commit inside the reservation's transaction, or a crash could leave a committed reservation whose key says `in_progress`.
-- `get` takes **no connection**, which is what enforces ADR-026: the in-progress waiter acquires a connection, performs one point read on `uq_idem_user_key`, releases it, and only then sleeps. A waiter that held its connection across the wait budget would exhaust the pool under burst and produce exactly the 503s ADR-016 forbids, so this is a correctness property of the signature and not a style choice.
+- `try_claim`, `get`, `reclaim_if_stale` and `release` are called on a connection that is **not** in a transaction, so each commits at once. Ownership has to be visible to a concurrent duplicate immediately.
+- `lock_owned` and `complete` run **inside T2**. `lock_owned` is its first statement; `complete` makes the reservation and the record of it commit together.
 
-`release` deletes the row and is called on **every** rolled-back T2 — a domain decline as well as a fault (ADR-020). Only successes are ever stored, so `complete` is only ever called with a 2xx `status_code`.
+The key row's `id` is the ownership token. `reclaim_if_stale` **rotates** it, so an owner presumed dead but merely slow finds its id gone at `lock_owned` and stops before touching a seat; its `release` then matches nothing (ADR-033).
 
-`purge_expired` exists for scheduled retention maintenance, not for a background loop; there is no worker that calls it (RISK-007).
+`release` deletes the row, guarded on `state = 'in_progress'`, and is called on every rolled-back T2 — a decline as well as a fault (ADR-020). `try_claim` translates a foreign-key violation to 401: that is where a validly signed token for a user with no row first touches the database.
 
-### `audit_repo.py`
+A retention purge is not written; see [17-future-scope.md](17-future-scope.md).
 
-```
-insert_batch(conn, records) -> int
-```
+### `health_repo.py`
 
-One method. Called only by `workers/audit_writer.py`, on a dedicated connection, never inside a request transaction. Uses `executemany` over a multi-row `INSERT`, with no foreign keys to check and no `RETURNING`.
+`ping(conn)` — the `SELECT 1` behind `/readyz`.
 
 ---
 
 ## Connection pooling
 
-`asyncpg` pool, created in the application lifespan and closed on shutdown. Every connection, on acquisition, has `statement_timeout`, `lock_timeout`, `idle_in_transaction_session_timeout`, and `TimeZone=UTC` applied from config.
+One `asyncpg` pool (`db/engine.py`), created in the lifespan and closed on shutdown. `statement_timeout`, `lock_timeout`, `idle_in_transaction_session_timeout` and `TimeZone=UTC` are passed as **startup parameters**, not issued as `SET`: the pool runs `RESET ALL` when a connection is released, which reverts a `SET` and returns to these (LEARN-014).
 
-Sizing: pool size is bounded by the **database's** connection ceiling divided by the instance count, not by expected request concurrency. Postgres connections are expensive; a pool larger than the database can serve converts a queue into refusals. Requests queue at the pool with a bounded acquire timeout; exceeding it is 503 `DATABASE_UNAVAILABLE`, which is why pool sizing is a correctness concern for the "zero 5xx" requirement and not merely a performance tuning knob. Numbers and the arithmetic are in [11-scalability.md](11-scalability.md).
+`db/session.py` gives services two scopes, `acquire()` and `transaction()`, and translates what "the database is not there" looks like — a pool-acquire timeout, a connection failure, a statement cancelled by `statement_timeout` — into 503 `DATABASE_UNAVAILABLE`. A value the database cannot represent (`DataError`) becomes a 422 there as a backstop behind the schemas.
 
-The audit writer holds its own connection outside the request pool, so a saturated request pool cannot stall audit flushing and a backed-up audit flush cannot starve requests.
+Pool size is bounded by the **database's** connection ceiling, not by expected request concurrency, and validated against it at startup with one connection kept back. Numbers are in [11-scalability.md](11-scalability.md).
 
 ---
 
@@ -142,15 +134,17 @@ The audit writer holds its own connection outside the request pool, so a saturat
 | Read-then-write on seat state | Double-sells under load. The guarded update exists for this. |
 | `SELECT` existence before `INSERT` for a unique column | Races. Let the constraint decide and translate the violation. |
 | Transaction control inside a repository | Fragments atomicity the service requires. |
-| String-interpolated SQL | Injection, and it defeats statement caching. |
+| A value interpolated into SQL | Injection, and it defeats statement caching. |
 | A loop of single-row inserts | N round trips where one statement suffices. |
 | `SELECT *` | A new column silently changes every mapping. |
-| Unfiltered `get_by_id` on an owned resource | One forgotten check from an authorization bypass. |
-| Re-typing either effective-status expression | Divergent copies break reconciliation. |
-| `SKIP LOCKED` anywhere | Declines seats that are still available. With no sweeper (ADR-017) it has no remaining legitimate use. |
-| An unordered `UPDATE` over a reservation's seats | Locks in scan order and leaves cancel and confirm outside the deadlock proof (ADR-022). |
-| A release or confirm with no `hold_expires_at > now()` guard | Promotes or releases a lapsed hold. With lazy-only expiry nothing else would catch it. |
+| An unfiltered get-by-id on an owned resource | One forgotten check from an authorization bypass. |
+| Re-typing an effective-status expression | Divergent copies break reconciliation. |
+| `SKIP LOCKED` anywhere | Declines seats that are still available. |
+| An unordered `UPDATE` over a reservation's seats | Locks in scan order and leaves the path outside the deadlock proof (ADR-022). |
+| A release or confirm with no `hold_expires_at > now()` guard | Promotes or releases a lapsed hold. |
+| A statement that can wait on a row lock, outside `contention_is_a_decline()` | A lock timeout becomes a 500 (LEARN-017). |
 | Holding a connection across an idempotency poll | Exhausts the pool under burst (ADR-026). |
-| Folding the superseded-row closure into the insert statement | Data-modifying CTEs share a snapshot with no defined order (LEARN-009). |
+| Folding the superseded-row closure into the insert | Data-modifying CTEs share a snapshot with no defined order (LEARN-009). |
 | Raising a driver exception past this layer | The route cannot know what the constraint means. |
-| Returning an ORM-ish lazy object | Hides IO behind attribute access, outside any transaction. |
+
+One known imperfection against the fourth-from-top rule's spirit: the fragment `status = 'held' AND hold_expires_at > now()` is written out in the release and confirm CTEs and in `list_seats`, rather than imported. The copies agree, and are quoted verbatim from [04-concurrency-and-atomicity.md](04-concurrency-and-atomicity.md).

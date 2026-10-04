@@ -40,7 +40,7 @@ The check constraint makes a half-upgraded guest unrepresentable. Upgrade is a s
 | `hold_ttl_seconds` | `INT` | `CHECK (hold_ttl_seconds > 0)` |
 | `total_seats` | `INT` | `CHECK (total_seats > 0)`; set at creation, immutable |
 | `status` | `TEXT` | `CHECK (status IN ('draft','on_sale','closed'))` |
-| `sales_open_at`, `sales_close_at` | `TIMESTAMPTZ` | nullable |
+| `sales_open_at`, `sales_close_at` | `TIMESTAMPTZ` | nullable; **present and unread** — sale windows are future scope |
 | `created_at`, `request_id` | | |
 
 `total_seats` is denormalized so the reconciliation invariant can be checked without counting rows. A trigger-free approach is sufficient because seats are inserted once, in the same transaction, and never added or removed.
@@ -143,7 +143,7 @@ Price is captured at claim time so a later price change never rewrites what some
 
 | Column | Type | Notes |
 |---|---|---|
-| `id` | `UUID` | PK |
+| `id` | `UUID` | PK, and the **ownership token**: a stale takeover rotates it (ADR-033) |
 | `user_id` | `UUID` | FK |
 | `key` | `TEXT` | client-supplied |
 | `scope` | `TEXT` | e.g. `reserve:{show_id}` — scopes a key to an operation |
@@ -166,7 +166,7 @@ CREATE INDEX ix_idem_expiry ON idempotency_keys (expires_at);
 
 `status_code` and `response_body` are only ever populated for a success: a domain decline deletes the row rather than storing it (ADR-020). `status_code` records what the original answer was; the replay's own status is always 200 (ADR-029).
 
-`ix_idem_stale ON idempotency_keys (created_at) WHERE state = 'in_progress'` is dropped. Stale-key reclaim is lazy — triggered by a duplicate's arrival, found by `(user_id, key)` — so nothing ever scanned it. `ix_idem_expiry` is retained to serve the scheduled retention purge (RISK-007).
+`ix_idem_stale ON idempotency_keys (created_at) WHERE state = 'in_progress'` is dropped. Stale-key reclaim is lazy — triggered by a duplicate's arrival, found by `(user_id, key)` — so nothing ever scanned it. `ix_idem_expiry` is retained to serve a retention purge, which is not yet written (RISK-007, future scope).
 
 ### `user_show_quota`
 
@@ -179,34 +179,11 @@ A lock target, not a tally. It exists so a principal's concurrent reserves seria
 
 ### `audit_log`
 
-| Column | Type | Notes |
-|---|---|---|
-| `id` | `BIGSERIAL` | PK — monotonic, cheaper to insert in batches than a UUID |
-| `request_id` | `UUID` | the correlation key |
-| `occurred_at` | `TIMESTAMPTZ` | |
-| `method`, `path`, `route` | `TEXT` | `route` is the template, for grouping |
-| `status_code` | `INT` | |
-| `duration_ms` | `INT` | |
-| `user_id` | `UUID` | nullable |
-| `is_guest` | `BOOLEAN` | nullable |
-| `outcome_code` | `TEXT` | nullable, the domain error code when declined |
-| `show_id` | `UUID` | nullable |
-| `seat_labels` | `TEXT[]` | nullable |
-| `idempotency_key` | `TEXT` | nullable |
-| `client_ip` | `INET` | nullable |
-
-```sql
-CREATE INDEX ix_audit_occurred  ON audit_log (occurred_at DESC);
-CREATE INDEX ix_audit_request   ON audit_log (request_id);
-CREATE INDEX ix_audit_outcome   ON audit_log (outcome_code, occurred_at DESC)
-    WHERE outcome_code IS NOT NULL;
-```
-
-No foreign keys: a FK check on every audit insert would add contention on the hot path for no operational benefit, and an audit row referencing a deleted user is still useful evidence. Written only by the batched writer, never inside a request transaction. Partitioning by `occurred_at` is the growth plan, deferred until volume requires it.
+Not created. The table's design is item 2 of [17-future-scope.md](17-future-scope.md).
 
 ## The effective-status expressions
 
-Stored status is not the authority for a lapsed hold, because with lazy-only expiry (ADR-017) nothing rewrites it. Both affected tables therefore have a derived view of state, each defined **once** in `db/sql.py` and imported by every reader.
+Stored status is not the authority for a lapsed hold, because with lazy-only expiry (ADR-017) nothing rewrites it. Both affected tables therefore have a derived view of state, each defined **once** in `db/sql.py` and imported by every reader. For seats, `db/sql.py` states the one rule three ways — `SEAT_ACTIVE`, `SEAT_CLAIMABLE` and `SEAT_EFFECTIVE_STATUS` — which are complementary by construction.
 
 ### Seats
 
@@ -239,24 +216,33 @@ The stored value is corrected only when the owner confirms or cancels — or nev
 
 Copies of either expression that drift remain the most likely way this service fails a reconciliation check. One definition each, cited everywhere.
 
-## Counts query
+## Counts
 
-One statement, so counts are read from a single consistent snapshot:
+`GET /shows/{id}` reads every seat of the show with its effective status in **one statement**, and tallies the counts from those same rows:
 
 ```sql
-SELECT
-  count(*) FILTER (WHERE eff = 'available') AS available,
-  count(*) FILTER (WHERE eff = 'held')      AS held,
-  count(*) FILTER (WHERE eff = 'confirmed') AS confirmed,
-  count(*)                                   AS total
-FROM (SELECT <seat_effective_status> AS eff FROM seats WHERE show_id = $1) s;
+SELECT label, section,
+       COALESCE(price_paise, $show_price) AS price_paise,
+       <seat_effective_status> AS status,
+       CASE WHEN status = 'held' AND hold_expires_at > now()
+            THEN hold_expires_at END AS held_until
+  FROM seats WHERE show_id = $1 ORDER BY label;
 ```
 
-Because all three counts come from one scan of one snapshot, `available + held + confirmed == total` holds by construction — the invariant cannot be broken by a concurrent write landing between two separate counts.
+Because the counts and the seat list are the same rows from one snapshot, `available + held + confirmed == total` holds by construction and the counts cannot disagree with the list — stronger than a separate counts query read alongside it.
+
+The `seats_available` gauge uses its own grouped count, with the claim's predicate, when `/metrics` is scraped:
+
+```sql
+SELECT show_id, count(*) FILTER (WHERE <seat_claimable>) AS available
+  FROM seats
+ WHERE show_id IN (SELECT id FROM shows ORDER BY created_at DESC LIMIT $1)
+ GROUP BY show_id;
+```
 
 ## Session settings
 
-Set per connection on checkout:
+Passed as connection **startup parameters** — not issued as `SET`, which the pool's `RESET ALL` on release would revert (LEARN-014):
 
 | Setting | Purpose |
 |---|---|
@@ -269,4 +255,4 @@ All four are config values. Isolation level is the default `READ COMMITTED` — 
 
 ## Migrations
 
-Alembic, forward-only, one migration per schema change, reviewed as code. Every migration is tested against a populated database before deploy. Constraints and indexes are part of the migration, never applied by hand — an index that exists only in production is a defect waiting for the next clean checkout. Index creation on the hot table uses `CONCURRENTLY` once the service is live.
+Alembic, forward-only. **One revision exists**, `0001`, carrying every table above; it runs in the container entrypoint before the server starts, and its failure fails the boot. Going forward: one migration per schema change, reviewed as code. Every migration is tested against a populated database before deploy. Constraints and indexes are part of the migration, never applied by hand — an index that exists only in production is a defect waiting for the next clean checkout. Index creation on the hot table uses `CONCURRENTLY` once the service is live.
