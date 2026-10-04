@@ -5,6 +5,7 @@ mismatch here is a constraint violation at runtime rather than a type error.
 """
 
 from enum import StrEnum
+from pathlib import Path
 from typing import Final
 
 SERVICE_NAME: Final = "seat-reservation"
@@ -128,6 +129,12 @@ SCOPE_REQUEST_ID: Final = "request_id"
 ACCESS_LOG_EXEMPT_PATHS: Final = frozenset({"/healthz", "/readyz", "/metrics"})
 
 UNMATCHED_ROUTE_LABEL: Final = "unmatched"
+
+#: The web page and its assets (mds/18-frontend.md). Loading them must not spend the
+#: visitor's read allowance, so the rate limiter passes both through.
+INDEX_PATH: Final = "/"
+STATIC_URL_PREFIX: Final = "/static"
+STATIC_DIR: Final = Path(__file__).resolve().parents[1] / "static"
 
 REDACTED: Final = "[redacted]"
 

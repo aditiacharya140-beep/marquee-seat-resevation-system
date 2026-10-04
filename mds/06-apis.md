@@ -25,6 +25,8 @@ Every response, success or failure, carries `X-Request-ID`. Every failure uses t
 | `GET` | `/healthz` | public | yes | exempt | `health.py` |
 | `GET` | `/readyz` | public | yes | exempt | `health.py` |
 | `GET` | `/metrics` | public | yes | exempt | `metrics.py` |
+| `GET` | `/` | public | yes | exempt | `pages.py` |
+| `GET` | `/static/{file}` | public | yes | exempt | mounted in `main.py` |
 
 Routes are grouped by resource and audience. No helper logic lives in any of these modules — a handler resolves dependencies, calls one service method, and returns a response model.
 
@@ -306,6 +308,10 @@ Executes a real query. Fails closed, never from a cached result.
 ### `GET /metrics`
 
 Prometheus text format. Catalogue in [10-observability.md](10-observability.md).
+
+### `GET /` and `GET /static/{file}`
+
+The web page and its two assets, served from `app/static/` as they are ([18-frontend.md](18-frontend.md)). A missing asset answers `404 ROUTE_NOT_FOUND` in the envelope like any other unmatched path.
 
 ---
 

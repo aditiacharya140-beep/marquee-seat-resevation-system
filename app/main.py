@@ -8,11 +8,14 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
+from starlette.staticfiles import StaticFiles
 
 from app.api.routes import api_router
 from app.core.config import settings
 from app.core.constants import (
     SCOPE_REQUEST_ID,
+    STATIC_DIR,
+    STATIC_URL_PREFIX,
     UNMATCHED_ROUTE_LABEL,
     Header,
     LogEvent,
@@ -160,6 +163,9 @@ def create_app() -> FastAPI:
     app.add_exception_handler(Exception, handle_unexpected_error)
 
     app.include_router(api_router)
+    # A missing asset raises Starlette's HTTPException, so it answers ROUTE_NOT_FOUND
+    # in the envelope like any other unmatched path.
+    app.mount(STATIC_URL_PREFIX, StaticFiles(directory=STATIC_DIR), name="static")
     return app
 
 

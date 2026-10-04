@@ -957,3 +957,12 @@ Completes LEARN-018, by test against the live service from one machine:
 
 **Implication** Both wrong values failed silently in opposite directions — one throttled everyone together, the other throttled no one — and neither is visible from a test suite, a health check or a passing burst. The value is recorded in `render.yaml` with how it was established. Between the deploy of the limiter and this fix, the live service's rate limiting was first shared across all clients and then ineffective.
 
+## ADR-036 — The web page is three static files served by the service itself
+
+**Date** 2026-10-05
+
+**Context** The service had no page, and `02-architecture.md` listed a UI as out of scope. A page was asked for. The options were a separate static site with its own deployment and CORS on the API, or files served by the existing service.
+
+**Choice** `app/static/` holds `index.html`, `app.css` and `app.js`; `GET /` returns the page and `/static/*` its assets. No framework, no build step. Both paths are exempt from rate limiting, so loading the page spends none of the visitor's `read` allowance. A missing asset answers `ROUTE_NOT_FOUND` in the envelope (ADR-023 still holds). The plan and what was built are in `18-frontend.md`.
+
+**Consequences** One URL and one deployment; the image changes by three files. The page adds nothing to the booking logic and uses only existing endpoints. It polls `GET /shows/{id}` every four seconds per open tab, which is `read` traffic keyed by principal. Guest issuance and sign-in are limited per client address, so the page depends on `RATE_LIMIT_TRUSTED_PROXY_HOPS` being right on Render; it is, as of LEARN-019.

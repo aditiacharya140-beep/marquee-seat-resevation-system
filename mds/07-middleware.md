@@ -71,7 +71,7 @@ The route class is decided from the method and path alone, before routing:
 | `admin` | `POST /shows` | principal | 30 / 60s |
 | `reserve` | every other `POST` — reserve, confirm, cancel | principal | 120 / 10s |
 | `read` | everything else | principal, or address if anonymous | 300 / 10s |
-| exempt | `/healthz`, `/readyz`, `/metrics` | — | no limit |
+| exempt | `/healthz`, `/readyz`, `/metrics`, and the web page: `/` and `/static/*` | — | no limit |
 
 `"120/10s"` is a bucket of 120 that refills over 10 seconds. Every ceiling is a `RATE_LIMIT_<CLASS>` environment variable, validated at startup.
 
