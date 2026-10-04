@@ -1,0 +1,46 @@
+# Render blueprint: the web service and its database, reproducible from the repository
+# rather than from console clicks (mds/13-deployment.md).
+#
+# The image's entrypoint runs `alembic upgrade head` before uvicorn, so a deploy
+# cannot forget its migration, and a failed migration fails the deploy.
+
+databases:
+  - name: seat-reservation-db
+    plan: free
+    region: singapore
+    postgresMajorVersion: "16"
+    databaseName: seatres
+    user: seatres
+
+services:
+  - type: web
+    name: seat-reservation
+    runtime: docker
+    plan: free
+    region: singapore
+    autoDeploy: true
+    # Readiness, so a deploy whose database is unreachable never takes traffic. The
+    # image's own HEALTHCHECK stays on /healthz: liveness must not touch a dependency.
+    healthCheckPath: /readyz
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: seat-reservation-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      # Entered in the dashboard, never committed. ADMIN_PASSWORD needs 12+ characters.
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: ALLOWED_EVENT_KINDS
+        value: cinema,concert
+      - key: DEFAULT_EVENT_KIND
+        value: cinema
+      - key: DEFAULT_CURRENCY
+        value: INR
+      # Sized against the database's connection ceiling, not request concurrency: a
+      # pool larger than the server can serve turns queueing into refusals.
+      - key: DB_POOL_MAX
+        value: "20"

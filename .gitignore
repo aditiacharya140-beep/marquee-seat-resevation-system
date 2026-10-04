@@ -29,3 +29,5 @@ pgdata/
 .DS_Store
 .idea/
 *.swp
+
+HANDOVER.md

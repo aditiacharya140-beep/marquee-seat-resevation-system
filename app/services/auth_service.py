@@ -1,0 +1,66 @@
+"""Registration, login, guest sessions and the admin bootstrap."""
+
+from app.core import security
+from app.core.config import settings
+from app.core.constants import LogEvent, Role
+from app.core.error_codes import ErrorCode
+from app.core.errors import AuthError, ConflictError
+from app.core.logging import get_logger
+from app.db.session import acquire
+from app.domain.models import AuthSession, Principal, User
+from app.repositories import user_repo
+
+logger = get_logger(__name__)
+
+
+def _session(user: User) -> AuthSession:
+    token, expires_in = security.issue_access_token(user)
+    return AuthSession(user=user, access_token=token, expires_in=expires_in)
+
+
+async def register(email: str, password: str) -> AuthSession:
+    # Hashed before a connection is taken: Argon2 is tens of milliseconds, and a pool
+    # slot held across it is a slot the reserve path cannot have.
+    password_hash = await security.hash_password(password)
+    async with acquire() as conn:
+        user = await user_repo.create_user(conn, email, password_hash, Role.USER)
+    return _session(user)
+
+
+async def login(email: str, password: str) -> AuthSession:
+    async with acquire() as conn:
+        user = await user_repo.get_by_email(conn, email)
+    verified = await security.verify_password(password, user.password_hash if user else None)
+    if user is None or not verified:
+        raise AuthError(ErrorCode.INVALID_CREDENTIALS)
+    return _session(user)
+
+
+async def guest() -> AuthSession:
+    async with acquire() as conn:
+        user = await user_repo.create_guest(conn)
+    return _session(user)
+
+
+async def me(principal: Principal) -> User:
+    async with acquire() as conn:
+        user = await user_repo.get_by_id(conn, principal.user_id)
+    if user is None:
+        raise AuthError(ErrorCode.UNAUTHENTICATED)
+    return user
+
+
+async def bootstrap_admin() -> None:
+    """Idempotent: an existing admin is never touched, so a changed password survives."""
+    async with acquire() as conn:
+        if await user_repo.admin_exists(conn):
+            return
+    password_hash = await security.hash_password(settings.admin_password.get_secret_value())
+    try:
+        async with acquire() as conn:
+            await user_repo.create_user(conn, settings.admin_email, password_hash, Role.ADMIN)
+    except ConflictError:
+        # Another instance won the same bootstrap, or the address belongs to a user.
+        logger.warning(LogEvent.ADMIN_BOOTSTRAP_SKIPPED)
+        return
+    logger.warning(LogEvent.ADMIN_BOOTSTRAPPED)

@@ -32,10 +32,10 @@ The check constraint makes a half-upgraded guest unrepresentable. Upgrade is a s
 | Column | Type | Notes |
 |---|---|---|
 | `id` | `UUID` | PK |
-| `event_kind` | `TEXT` | `'cinema'`, `'concert'`, … validated against config, not a DB enum, so a new kind needs no migration |
+| `event_kind` | `TEXT` | validated against `ALLOWED_EVENT_KINDS` from configuration, not a DB enum and not a Python enum, so a new kind needs no migration and no deploy (ADR-013, ADR-025) |
 | `name` | `TEXT` | |
 | `price_paise` | `BIGINT` | `CHECK (price_paise >= 0)` |
-| `currency` | `CHAR(3)` | default `'INR'` |
+| `currency` | `CHAR(3)` | **no database default**; supplied by the request or by `DEFAULT_CURRENCY` |
 | `per_user_limit` | `INT` | `CHECK (per_user_limit > 0)`, default 4 |
 | `hold_ttl_seconds` | `INT` | `CHECK (hold_ttl_seconds > 0)` |
 | `total_seats` | `INT` | `CHECK (total_seats > 0)`; set at creation, immutable |
@@ -44,6 +44,10 @@ The check constraint makes a half-upgraded guest unrepresentable. Upgrade is a s
 | `created_at`, `request_id` | | |
 
 `total_seats` is denormalized so the reconciliation invariant can be checked without counting rows. A trigger-free approach is sufficient because seats are inserted once, in the same transaction, and never added or removed.
+
+`currency` deliberately has no database default. A column default plus a configuration default is two sources of truth that can disagree, and the one that wins depends on whether the application happened to supply the value — so the value is always supplied, from the request or from `DEFAULT_CURRENCY` (ADR-025).
+
+`event_kind` is free-form text with its permitted set in configuration. No table, column or module in this service names a vertical; cinema and concert are environment values, which is the whole of what makes the model generic (ADR-025).
 
 ### `seats`
 
@@ -73,9 +77,10 @@ ALTER TABLE seats ADD CONSTRAINT ck_seats_hold_coherent CHECK (
 );
 
 CREATE INDEX ix_seats_claimable  ON seats (show_id, label) WHERE status <> 'confirmed';
-CREATE INDEX ix_seats_expiring   ON seats (hold_expires_at) WHERE status = 'held';
 CREATE INDEX ix_seats_by_holder  ON seats (show_id, held_by) WHERE held_by IS NOT NULL;
 ```
+
+`ix_seats_expiring ON seats (hold_expires_at) WHERE status = 'held'` existed to serve the sweeper's scan for lapsed holds. ADR-017 deletes the sweeper, so nothing scans by expiry — the lazy predicate always arrives with a `(show_id, label)` already in hand — and the index was being maintained on every write to the hottest table in the system for no reader. It is dropped. A future cleanup job that wants it adds it back in its own migration.
 
 `uq_seats_show_label` is load-bearing: a seat is a single row, so two concurrent claims necessarily contend on the same row and Postgres serializes them. There is no interleaving that produces two A12s, because there is only one A12.
 
@@ -100,8 +105,9 @@ CREATE INDEX ix_seats_by_holder  ON seats (show_id, held_by) WHERE held_by IS NO
 
 ```sql
 CREATE INDEX ix_reservations_user_show ON reservations (user_id, show_id, status);
-CREATE INDEX ix_reservations_expiring  ON reservations (hold_expires_at) WHERE status = 'held';
 ```
+
+`status` is the *stored* status. For a hold that has lapsed it still reads `held`, because nothing rewrites it — the reservation effective-status expression below is what every reader uses, and it derives `expired`. `ix_reservations_expiring` is dropped for the same reason as `ix_seats_expiring`: it served the sweeper's `mark_expired` scan, and there is no sweeper.
 
 ### `reservation_seats`
 
@@ -119,6 +125,17 @@ CREATE UNIQUE INDEX uq_seat_active_claim
 ```
 
 **This index is the backstop.** The guarded `UPDATE` on `seats` is the mechanism; this index makes a second simultaneous active claim on the same seat physically impossible even if that predicate were ever wrong. A violation is a genuine bug: it is translated to a 409 so the client still sees a clean decline, and logged at `error` with an alert.
+
+**It cannot be tightened to "active and unexpired."** A partial index predicate must be `IMMUTABLE` and `now()` is `STABLE`, so PostgreSQL rejects `WHERE released_at IS NULL AND hold_expires_at > now()` outright (LEARN-008). The index can only express "active", which means a lapsed hold's row collides with the legitimate next claim's insert. That is resolved by closing superseded rows inside the claim transaction (ADR-019, Mechanism 3 in [04-concurrency-and-atomicity.md](04-concurrency-and-atomicity.md)):
+
+```sql
+UPDATE reservation_seats SET released_at = now()
+ WHERE seat_id = ANY($seat_ids::uuid[]) AND released_at IS NULL;
+```
+
+This index is also the index that statement needs — same column, same predicate — so the backstop pays for itself twice.
+
+`released_at` is therefore not a reliable count of live claims on its own: between a hold lapsing and its seat being re-claimed, the row is active but the claim is not. Reporting queries derive effective status rather than counting open rows (RISK-007).
 
 Price is captured at claim time so a later price change never rewrites what someone owes.
 
@@ -140,11 +157,16 @@ Price is captured at claim time so a later price change never rewrites what some
 
 ```sql
 ALTER TABLE idempotency_keys ADD CONSTRAINT uq_idem_user_key UNIQUE (user_id, key);
-CREATE INDEX ix_idem_stale ON idempotency_keys (created_at) WHERE state = 'in_progress';
 CREATE INDEX ix_idem_expiry ON idempotency_keys (expires_at);
 ```
 
-`uq_idem_user_key` is scoped to the user, so one principal's key choice cannot collide with another's. The insert that wins this constraint owns the operation; the loser reads the row and replays or waits.
+`uq_idem_user_key` is scoped to the user, so one principal's key choice cannot collide with another's. The insert that wins this constraint owns the operation; the loser reads the row — through this index, one point lookup per poll, holding no connection in between (ADR-026) — and replays or waits.
+
+`scope` is diagnostic only. It is **not** in the unique constraint and the same key against a different show is not a distinct operation: the show id is folded into `request_fingerprint`, so that case is a clean 409 `IDEMPOTENCY_KEY_REUSED` (ADR-021). `request_fingerprint` covers the operation name, the show id from the path, the sorted de-duplicated labels, and `hold_ttl_seconds` when present.
+
+`status_code` and `response_body` are only ever populated for a success: a domain decline deletes the row rather than storing it (ADR-020). `status_code` records what the original answer was; the replay's own status is always 200 (ADR-029).
+
+`ix_idem_stale ON idempotency_keys (created_at) WHERE state = 'in_progress'` is dropped. Stale-key reclaim is lazy — triggered by a duplicate's arrival, found by `(user_id, key)` — so nothing ever scanned it. `ix_idem_expiry` is retained to serve the scheduled retention purge (RISK-007).
 
 ### `user_show_quota`
 
@@ -182,9 +204,13 @@ CREATE INDEX ix_audit_outcome   ON audit_log (outcome_code, occurred_at DESC)
 
 No foreign keys: a FK check on every audit insert would add contention on the hot path for no operational benefit, and an audit row referencing a deleted user is still useful evidence. Written only by the batched writer, never inside a request transaction. Partitioning by `occurred_at` is the growth plan, deferred until volume requires it.
 
-## The effective-status expression
+## The effective-status expressions
 
-A hold that has lapsed but has not yet been swept is **claimable**, and so must report as `available`. If the claim predicate and the counts query disagree about that, the reconciliation invariant appears to break during a burst. The expression is therefore defined once, in `db/sql.py`, and imported by the claim, the sweeper, and the counts query:
+Stored status is not the authority for a lapsed hold, because with lazy-only expiry (ADR-017) nothing rewrites it. Both affected tables therefore have a derived view of state, each defined **once** in `db/sql.py` and imported by every reader.
+
+### Seats
+
+A lapsed hold is **claimable**, and so must report as `available`. If the claim predicate and the counts query disagree about that, the reconciliation invariant appears to break during a burst — the API would report `held` for a seat the next claim hands out.
 
 ```sql
 CASE
@@ -194,7 +220,24 @@ CASE
 END
 ```
 
-Three copies of this that drift is the most likely way this service fails a reconciliation check. One definition, cited everywhere.
+Consumed by: the claim predicate's expiry arm, the per-user-limit count, the `GET /shows/{id}` counts and seat rows, and the per-show gauges.
+
+### Reservations
+
+A `held` reservation whose expiry has passed reads **`expired`**, everywhere, because every reader derives it.
+
+```sql
+CASE
+  WHEN status = 'held' AND hold_expires_at <= now() THEN 'expired'
+  ELSE status
+END
+```
+
+Consumed by: `GET /reservations`, `GET /reservations/{id}`, and the diagnostic read that chooses the decline code when a confirm or cancel matches zero rows (ADR-022).
+
+The stored value is corrected only when the owner confirms or cancels — or never. A reader that reports the stored `held` for a lapsed hold is a defect of exactly the same class as a second, drifted copy of the seat expression.
+
+Copies of either expression that drift remain the most likely way this service fails a reconciliation check. One definition each, cited everywhere.
 
 ## Counts query
 
@@ -206,7 +249,7 @@ SELECT
   count(*) FILTER (WHERE eff = 'held')      AS held,
   count(*) FILTER (WHERE eff = 'confirmed') AS confirmed,
   count(*)                                   AS total
-FROM (SELECT <effective_status> AS eff FROM seats WHERE show_id = $1) s;
+FROM (SELECT <seat_effective_status> AS eff FROM seats WHERE show_id = $1) s;
 ```
 
 Because all three counts come from one scan of one snapshot, `available + held + confirmed == total` holds by construction — the invariant cannot be broken by a concurrent write landing between two separate counts.
@@ -217,8 +260,8 @@ Set per connection on checkout:
 
 | Setting | Purpose |
 |---|---|
-| `statement_timeout` | No statement runs unbounded; a hung query cannot occupy a pool slot forever |
-| `lock_timeout` | A claim waiting on a contended row gives up and declines 409 rather than queueing indefinitely |
+| `statement_timeout` | No statement runs unbounded; a hung query cannot occupy a pool slot forever. Exhausting it is a **fault**: 503 `DATABASE_UNAVAILABLE` |
+| `lock_timeout` | A claim waiting on a contended row gives up and declines 409 rather than queueing indefinitely. Must be strictly below `statement_timeout` by the configured margin, validated at startup, so the lock timeout always fires first on the claim path (ADR-027) |
 | `idle_in_transaction_session_timeout` | A leaked transaction cannot hold seat locks indefinitely |
 | `TimeZone = UTC` | No local-time ambiguity in expiry arithmetic |
 

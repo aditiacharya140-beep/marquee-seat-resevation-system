@@ -24,7 +24,9 @@ Subclasses, one per outcome, carrying their own status and code:
 ```
 AuthError           401   UNAUTHENTICATED, INVALID_CREDENTIALS
 PermissionError     403   FORBIDDEN
-NotFoundError       404   SHOW_NOT_FOUND, SEAT_NOT_FOUND, RESERVATION_NOT_FOUND
+NotFoundError       404   SHOW_NOT_FOUND, SEAT_NOT_FOUND, RESERVATION_NOT_FOUND,
+                          ROUTE_NOT_FOUND
+MethodError         405   METHOD_NOT_ALLOWED
 ConflictError       409   SEAT_TAKEN, PER_USER_LIMIT, EMAIL_TAKEN,
                           IDEMPOTENCY_KEY_REUSED, IDEMPOTENCY_IN_PROGRESS,
                           SHOW_NOT_ON_SALE, RESERVATION_EXPIRED,
@@ -39,6 +41,20 @@ InternalError       500   INTERNAL_ERROR
 Services raise these. Nothing else. `HTTPException` is not raised in application code — it bypasses the envelope and the code registry, so a client would receive two different error shapes depending on which layer failed.
 
 `core/error_codes.py` is the single registry: code → status, default message, whether it is a client-visible decline or an internal fault. Every code is listed there and nowhere else, so the set of possible error codes is enumerable from one file — which is what makes the client contract in [06-apis.md](06-apis.md) checkable against the code.
+
+### Operational codes
+
+Five codes appear in no endpoint contract table, because they are not outcomes of any particular endpoint. They are enumerated **here**, and this list plus the `06-apis.md` contract tables is the closed set:
+
+| Code | Status | Raised by |
+|---|---|---|
+| `ROUTE_NOT_FOUND` | 404 | the router, for a path that matches nothing (ADR-023) |
+| `METHOD_NOT_ALLOWED` | 405 | the router, for a known path with an unsupported method; the `Allow` header is preserved |
+| `DATABASE_UNAVAILABLE` | 503 | a connection failure, a pool-acquire timeout, or a statement cancelled by `statement_timeout` |
+| `NOT_READY` | 503 | `/readyz` failing closed |
+| `INTERNAL_ERROR` | 500 | the catch-all, for a fault with no registered code |
+
+The registry assertion is therefore an **equality**: the registry's code set equals the `06-apis.md` contract codes union this table. Asserting equality against the contract codes alone is unsatisfiable, because these five would always be surplus; asserting only a subset relation would let a stray code be added unnoticed.
 
 ---
 
@@ -72,11 +88,16 @@ Registered in `main.py`, most specific first:
 
 | Handler | Behaviour |
 |---|---|
-| `AppError` | Render the envelope from the exception. Log at the exception's own `log_level`. Increment the decline counter labelled by code. |
-| `RequestValidationError` | Translate to the envelope with `code=VALIDATION_ERROR`, field errors in `details.fields`. Log at `info`. |
-| `Exception` (catch-all) | Log at `error` **with a stack trace**, increment `unhandled_exceptions_total`, return 500 `INTERNAL_ERROR` with a generic message. Never leak `str(exc)`. |
+| `AppError` | Render the envelope from the exception. Log `app_error` at the exception's own `log_level`, with `outcome_code`. Increment the decline counter labelled by code. |
+| `RequestValidationError` | Translate to the envelope with `code=VALIDATION_ERROR`, field errors in `details.fields`. Log `validation_failed` at `info`. |
+| `StarletteHTTPException` | 404 → `ROUTE_NOT_FOUND`, 405 → `METHOD_NOT_ALLOWED` with the router's `Allow` header preserved; both in the standard envelope, logged at `info`. Any other status logs `unhandled_http_exception` at `error` and answers 500 `INTERNAL_ERROR` — see below. |
+| `Exception` (retained as a second line of defence) | Log at `error` **with a stack trace**, increment `unhandled_exceptions_total`, return 500 `INTERNAL_ERROR` with a generic message. Never leak `str(exc)`. |
 
 A 500 reaching a client is a bug report about this service, not information for the caller. The stack goes to the logs, keyed by the request id the client already holds.
+
+**Why a non-404/405 `StarletteHTTPException` is a fault.** The only legitimate sources of that exception here are the router's own 404 and 405. Anything else means application code raised `HTTPException`, which these conventions forbid precisely because it bypasses the envelope and the registry. Answering 500 and logging at `error` is how that violation gets noticed, rather than quietly serving a status with no registered code.
+
+**The catch-all is also a middleware boundary.** Registering a handler for `Exception` in Starlette installs it on `ServerErrorMiddleware`, which builds the response and then **re-raises unconditionally** so the ASGI server logs the failure (LEARN-010). That second line is emitted outside every user middleware, after the request-id ContextVar has been reset, so it cannot carry a request id — directly contradicting "every log line carries `request_id`". `ExceptionBoundaryMiddleware`, registered immediately inside `RequestContextMiddleware`, therefore catches, logs once with the id and a stack, and **returns** the envelope, so nothing escapes to be re-raised (ADR-024). The `Exception` handler stays registered to cover a failure in the request-context middleware itself — the one region no boundary inside it can reach, and one where double-logging is appropriate.
 
 ---
 
@@ -93,11 +114,13 @@ Database exceptions are translated at the **repository boundary**. A raw `asyncp
 | `deadlock_detected` (`40P01`) | 409 `SEAT_TAKEN`, metric label `deadlock` | **error** |
 | `serialization_failure` (`40001`) | retried once in-request, then 409 | warning |
 | Connection failure / pool timeout | 503 `DATABASE_UNAVAILABLE` | error |
-| `query_canceled` (statement timeout) | 503 `DATABASE_UNAVAILABLE` | error |
+| `query_canceled` (`57014`, statement timeout) | 503 `DATABASE_UNAVAILABLE` | **error** |
 
-Two of these deserve emphasis:
+Three of these deserve emphasis:
 
-**`uq_seat_active_claim` is logged at `error` even though the client gets a clean 409.** That index is the backstop behind the guarded `UPDATE`; if it ever fires, the primary mechanism has a bug. The client still gets the correct answer, and we get paged.
+**`lock_timeout` is a decline and `statement_timeout` is a fault**, and they must not be collapsed (ADR-027). A lock timeout means another transaction holds the row — a contention outcome. A statement timeout means a statement could not finish in the time the database was given, which is a wrong plan, an overloaded database, or something pathological. Reporting the second as a 409 would tell a client a seat is taken when it may be free, and hide the fault. The distinction is only trustworthy because `DB_LOCK_TIMEOUT_MS` is held strictly below `DB_STATEMENT_TIMEOUT_MS` by a configured margin, validated at startup: reversed, every hot-seat decline would arrive as a 503.
+
+**`uq_seat_active_claim` is logged at `error` even though the client gets a clean 409.** That index is the backstop behind the guarded `UPDATE`; if it ever fires, the primary mechanism has a bug. Since ADR-019 closes superseded claim rows inside the claim transaction, there is no legitimate path that produces this violation — a lapsed hold's open row no longer collides with its successor — so the alert has no false-positive source. The client still gets the correct answer, and we get paged.
 
 **`deadlock_detected` is logged at `error`.** The lock-ordering argument in [04-concurrency-and-atomicity.md](04-concurrency-and-atomicity.md) says a deadlock is impossible. One occurring means the argument is wrong or a new code path violates the order. The client is shielded; the alert fires.
 
@@ -125,6 +148,8 @@ Added where applicable: `user_id`, `is_guest`, `show_id`, `seat_labels`, `reserv
 
 ```
 http_request                  one per request, from the access log
+app_error                     any AppError rendered, with outcome_code and status
+validation_failed             a 422, with the offending field paths
 seat_claim_attempt            before the atomic claim, with labels and principal
 seat_claim_confirmed          a winner
 seat_claim_declined           a loser, with outcome_code and conflicts
@@ -133,17 +158,22 @@ idempotency_key_claimed       this request owns the key
 idempotency_replay            a stored response returned
 idempotency_key_reuse         same key, different fingerprint
 idempotency_in_progress       bounded wait exhausted
+idempotency_key_released      a decline or fault released the key (ADR-020)
 idempotency_key_reclaimed     a stale in_progress row taken over
 reservation_confirmed
 reservation_cancelled
-hold_sweep_batch              count swept, duration
 audit_flush_batch             count written, duration
 audit_queue_saturated         drop occurred, with queue depth
 rate_limited                  with route class and key kind
 readiness_check_failed        with the failing dependency
 startup / shutdown            with resolved config summary, secrets redacted
+unhandled_http_exception      a framework HTTPException that is neither 404 nor 405
 unhandled_exception           always with a stack trace
 ```
+
+`app_error` and `validation_failed` are the generic lines every handler emits, carrying the specific code as a field rather than in the event name — the code is what gets queried and counted, and a per-code event name would make the catalogue grow with the registry. The specific `seat_claim_declined` and `per_user_limit_declined` lines are emitted by the **service**, where the domain context (conflicting labels, the limit, how many are currently held) is known; the handler cannot know those.
+
+`hold_sweep_batch` is gone with the sweeper (ADR-017). The signal it carried — how much lapsed-hold churn there is — is now the `superseded_claims_closed_total` counter, incremented where the work actually happens, inside the claim transaction. No log line: it would fire on a large share of claims during a burst, which is exactly the volume this document says to avoid.
 
 ### Level discipline
 
@@ -151,7 +181,7 @@ unhandled_exception           always with a stack trace
 |---|---|---|
 | `info` | Expected, including every domain decline | `seat_claim_declined`, `idempotency_replay`, `rate_limited` |
 | `warning` | Unexpected but handled | lock timeout, serialization retry, audit drop, stale key reclaim |
-| `error` | A fault in this service | unhandled exception, backstop index violation, deadlock, readiness failure |
+| `error` | A fault in this service | unhandled exception, backstop index violation, deadlock, statement timeout, readiness failure, an `HTTPException` with an unexpected status |
 
 **A decline is `info`.** 20,000 losers of a seat race are not 20,000 errors; logging them at `error` makes the error rate meaningless and buries the one line that matters. This is the most important line in this document.
 

@@ -44,6 +44,19 @@ Every handoff names: the artifact produced, the `REQ-*`/`ADR-*` IDs it touches, 
 
 Never delete an entry. Supersede it with a new one that references the old ID. An ADR is only reversed by another ADR.
 
+## Decision highlights
+
+`mds/16-decision-highlights.md` is the curated companion to the ledger. The ledger records *what* was decided; this records **how it came about and who drove it** — the judgment calls, the defects caught before shipping, and what was nearly shipped instead.
+
+Append an entry when any of these happen:
+
+- A decision changes the design, and the reasoning that produced it is worth keeping.
+- A defect is caught before it ships — record the source (design review, requirements decomposition, implementation, test harness) and the stage at which it was caught.
+- An assumption is replaced by evidence.
+- A direction from the user materially changes the design, including when it corrects a recommendation already on the table. Record these honestly; they are the provenance the write-up's AI-usage section needs, and reconstructing them later produces a flattering fiction instead of a record.
+
+Do not append routine implementation work. This file is the signal, not the log — a highlights document that lists everything highlights nothing.
+
 ## Self-enhancement rule
 
 These skills are expected to grow as the project does. When any agent learns something durable — a convention that prevented a bug, a Postgres semantic that matters, a platform constraint, a review finding that recurred — it must do **both**:
@@ -65,3 +78,4 @@ The commit history is part of the deliverable. One logical change per commit, im
 ## Enhancement log
 
 - `2026-10-03` — Initial protocol: roster, stage gates, ledger, self-enhancement rule.
+- `2026-10-03` — Added the decision-highlights companion to the ledger, with its append triggers. Rationale: four design defects were found by someone reading a written correctness argument and checking it against the SQL it claimed to prove — impossible if the argument lives only in someone's head — and every implementation defect was found by executing the failure case rather than inspecting it. Both patterns are worth recording as practice, not just as outcomes.

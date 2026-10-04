@@ -6,21 +6,23 @@ ASGI middleware wraps outward, so registration order in `main.py` is the reverse
 
 ```
 1. RequestContextMiddleware      mint/accept request id, bind context
-2. AccessLogMiddleware           time the request, log the outcome
-3. MetricsMiddleware             latency histogram, in-flight gauge
-4. RateLimitMiddleware           per-principal ceilings, 429 + Retry-After
-5. AuditMiddleware               non-blocking enqueue of an audit record
-6. application                   routes, Depends, services
+2. ExceptionBoundaryMiddleware   catch, log once with the id and a stack, render the envelope
+3. AccessLogMiddleware           time the request, log the outcome
+4. MetricsMiddleware             latency histogram, in-flight gauge
+5. RateLimitMiddleware           per-principal ceilings, 429 + Retry-After
+6. AuditMiddleware               non-blocking enqueue of an audit record
+7. application                   routes, Depends, services
 ```
 
 The rationale for each position:
 
 - **Request context is first** so every later layer — including a rate-limit rejection and an unhandled exception — has a request id to log and return. A 429 with no correlation id is an untraceable event, which is the opposite of the point.
+- **The exception boundary is second**, immediately inside the context. It catches anything escaping from there inward, logs it once at `error` with the id and a stack, and **returns** the envelope. Returning rather than re-raising is the whole point: Starlette's `ServerErrorMiddleware` sits outside every user middleware and re-raises unconditionally, and its duplicate log line is emitted after the ContextVar has been reset, so it cannot carry a request id (ADR-024, LEARN-010). The access log sits outside the boundary, so a 500 produces an `unhandled_exception` line and an `http_request` line — two different events, both correlated, which is not duplication.
 - **Access log and metrics wrap the rate limiter**, so throttled requests appear in latency and status metrics. A limiter that hides its own rejections from the metrics makes a throttling incident invisible.
 - **Rate limiting precedes audit and the application** so a rejected request costs nothing beyond the bucket check — no audit row, no database connection, no route resolution.
 - **Audit is innermost** so it records the final status code, which it can only know on the way out.
 
-Error handling is **not** middleware. FastAPI exception handlers render the envelope, because they have access to the resolved route and the raised `AppError`. A thin outermost catch-all exists only for exceptions escaping before the handler stack is reachable.
+Domain error handling is **not** middleware. FastAPI exception handlers render the envelope for `AppError`, `RequestValidationError` and `StarletteHTTPException`, because they have access to the resolved route and the raised exception. The middleware boundary at position 2 exists only for what those handlers cannot catch cleanly — an unhandled exception, which must not be allowed to reach `ServerErrorMiddleware` and be re-raised there.
 
 ---
 
@@ -41,7 +43,7 @@ reset ContextVar
 - Adopting a client-supplied id lets a caller correlate across its own retries, which is exactly what a burst script needs.
 - The `ContextVar` is read by the logger, the repository layer (to stamp `request_id` on every row), and the audit middleware. Nothing passes the id through a function signature.
 - The token is reset in a `finally`, so a leaked `ContextVar` cannot bleed into the next request on the same task.
-- Background workers set their own id per batch, so sweeper and audit-writer activity is traceable too.
+- Background workers set their own id per batch, so audit-writer and gauge-refresher activity is traceable too. There is no expiry worker to correlate (ADR-017).
 
 ---
 

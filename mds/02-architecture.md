@@ -9,7 +9,8 @@ A single stateless FastAPI process in front of one PostgreSQL primary. No cache,
             │  X-Request-ID, Authorization: Bearer …
             ▼
    ┌─────────────────────────────┐
-   │  middleware chain            │  request ctx → access log → metrics
+   │  middleware chain            │  request ctx → exception boundary
+   │                              │  → access log → metrics
    │                              │  → rate limit → audit enqueue
    └─────────────┬───────────────┘
                  ▼
@@ -28,9 +29,11 @@ A single stateless FastAPI process in front of one PostgreSQL primary. No cache,
                  ▼
             PostgreSQL
 
-   workers:  hold_sweeper        (expires lapsed holds)
-             audit_writer        (drains the audit queue in batches)
+   workers:  audit_writer        (drains the audit queue in batches)
+             gauge_refresher     (publishes per-show seat gauges)
 ```
+
+There is no expiry worker. Expiry is enforced entirely by the claim predicate (ADR-017), so the only background tasks in the service are an audit drain and a metrics refresh, neither of which any correctness property depends on.
 
 ## Layering
 
@@ -56,7 +59,9 @@ app/
   main.py                    app factory, lifespan, router + middleware registration
   core/
     config.py                pydantic-settings; every tunable, env-backed
-    constants.py             enums: SeatStatus, ReservationStatus, Role, EventKind, headers
+    constants.py             enums: SeatStatus, ReservationStatus, ShowStatus, Role, headers
+                             — deliberately no EventKind: the permitted set is
+                               configuration, not code (ADR-025)
     context.py               ContextVars: request_id, principal
     errors.py                AppError hierarchy
     error_codes.py           the code registry
@@ -66,10 +71,12 @@ app/
   db/
     engine.py                asyncpg pool lifecycle, statement/lock timeouts
     session.py               connection + transaction dependencies
-    sql.py                   shared SQL fragments (effective-status expression)
+    sql.py                   shared SQL fragments: the seat and reservation
+                             effective-status expressions, the counts query
     migrations/              alembic
   middleware/
-    request_context.py  access_log.py  metrics.py  rate_limit.py  audit.py
+    request_context.py  exception_boundary.py  access_log.py
+    metrics.py  rate_limit.py  audit.py
   api/
     deps.py                  get_current_user, require_admin, require_role, idempotency
     routes/
@@ -91,7 +98,7 @@ app/
   utils/
     ids.py  canonical_json.py  hashing.py  backoff.py  clock.py
   workers/
-    hold_sweeper.py  audit_writer.py
+    audit_writer.py  gauge_refresher.py
 ```
 
 `seat_repo.py` holds the atomic claim. It is the single most important file in the service and the only place seat state transitions are expressed.
@@ -99,7 +106,8 @@ app/
 ## Request lifecycle
 
 1. **Request context** — accept or mint a UUID request id, bind it to a `ContextVar` and the logger, echo it on the response.
-2. **Access log** — capture method, path, duration, status on the way out.
+2. **Exception boundary** — catch anything escaping from here inward, log it once at `error` with the id and a stack, and return the envelope. Placed here, rather than relying only on an `Exception` handler, because Starlette's `ServerErrorMiddleware` re-raises unconditionally and its duplicate log line sits outside the context var (ADR-024, LEARN-010).
+3. **Access log** — capture method, path, duration, status on the way out.
 3. **Metrics** — latency histogram, in-flight gauge.
 4. **Rate limit** — per-principal bucket by route class; a 429 is still traceable because the id already exists.
 5. **Audit enqueue** — non-blocking `put_nowait` onto a bounded queue.
@@ -116,9 +124,13 @@ The reserve path is two transactions, deliberately:
 | Txn | Contents | Why separate |
 |---|---|---|
 | T1 | Insert the idempotency key as `in_progress` | Must commit before any claim so the unique constraint publishes ownership to concurrent duplicates |
-| T2 | Lock quota row → check limit → claim seats → insert reservation and seat links → mark the key `completed` with the stored response | Result and key completion commit atomically, so a crash can never leave a reservation whose key says `in_progress` |
+| T2 | Lock quota row → check limit → claim seats → **close superseded claim rows** → insert reservation and seat links → mark the key `completed` with the stored response | Result and key completion commit atomically, so a crash can never leave a reservation whose key says `in_progress` |
 
-If T2 rolls back, the key remains `in_progress` and is reclaimable after a staleness window. If T2 commits, the response is durably recorded for replay. There is no ordering in which a reservation exists without its key being complete.
+The superseded-row closure is inside T2 and after the claim, not before and not folded into the insert's statement; the ordering argument is ADR-019.
+
+If T2 commits, the response is durably recorded for replay. If T2 rolls back — for a domain decline or a fault alike — the key row is **deleted** in a small follow-up transaction so a retry genuinely re-attempts (ADR-020). If that delete also fails, the key stays `in_progress` and the staleness reclaim handles it. There is no ordering in which a reservation exists without its key being complete.
+
+Lock order across the whole service is three tiers and is proved deadlock-free in [04-concurrency-and-atomicity.md](04-concurrency-and-atomicity.md): a claim takes quota → seats (ascending label) → `reservation_seats`; a confirm or cancel takes its own `reservations` row → seats (ascending label) → `reservation_seats`.
 
 ## Generic event model
 
@@ -126,7 +138,7 @@ Cinema and concert differ only in data:
 
 | Variable | Carried by |
 |---|---|
-| Event kind | `shows.event_kind`, free-form, validated against config |
+| Event kind | `shows.event_kind`, free-form `TEXT`, validated against `ALLOWED_EVENT_KINDS` from configuration — never a Python or database enum (ADR-025) |
 | Layout | `seats.section`, nullable; `label` is the canonical identity and the only one stored |
 | Pricing | `shows.price_paise` with per-seat `seats.price_paise` override |
 | Booking limit | `shows.per_user_limit` |
@@ -138,8 +150,8 @@ No code branches on event kind. A reserved-seating concert and a screening trave
 ## Failure posture
 
 - A dependency failure fails closed: readiness reports unready, requests return a 503 with a code rather than a stack trace.
-- The claim path is bounded by `lock_timeout` and `statement_timeout`; exhausting either is translated to a 409, never a 500.
-- Workers are not in the correctness path. Expiry is enforced lazily inside the claim predicate, so a dead sweeper degrades reporting freshness, not safety. A dead audit writer loses audit records and raises a metric; it cannot stall a request.
+- The claim path is bounded by `lock_timeout` and `statement_timeout`, which mean different things and answer differently: exhausting `lock_timeout` is contention and is a 409 `SEAT_TAKEN`; exhausting `statement_timeout` is a fault and is a 503 `DATABASE_UNAVAILABLE`. `statement_timeout` is configured above `lock_timeout` by a validated margin, so on the claim path the lock timeout always fires first and a 503 there is unambiguous evidence of a genuine fault (ADR-027).
+- Workers are not in the correctness path, and there is no longer a worker anywhere near seat state. Expiry is enforced entirely inside the claim predicate (ADR-017). A dead audit writer loses audit records and raises a metric; it cannot stall a request. A dead gauge refresher staleness-dates a metric; `GET /shows/{id}` stays exact.
 - The connection pool is sized against the database's connection ceiling, not against expected concurrency; queueing at the pool is preferable to refusal at the database.
 
 ## What is deliberately absent

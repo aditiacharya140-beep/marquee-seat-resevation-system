@@ -25,11 +25,12 @@ These are settled. Each is argued in its own document and recorded as an ADR in 
 | Decision | Choice |
 |---|---|
 | Atomic claim | Guarded conditional `UPDATE`; ordered `FOR UPDATE` CTE for multi-seat |
-| Reserve semantics | Returns `held` with a TTL; explicit `confirm` promotes it |
+| Reserve semantics | Returns `confirmed` by default; `hold_ttl_seconds` opts into a `held` reservation that `confirm` promotes (ADR-017) |
 | Multi-seat partials | All-or-nothing; a single unavailable seat declines the whole request |
-| Expiry | Lazy in the claim predicate, plus a background sweeper |
+| Expiry | Lazy in the claim predicate only — **no sweeper**. Superseded claim rows are closed inside the claim transaction (ADR-019) |
 | Per-user limit | Quota row lock to serialize a principal, count derived from `seats` |
-| Idempotency | `(user_id, key)` unique constraint; bounded wait then replay on overlap |
+| Idempotency | `(user_id, key)` unique; the fingerprint carries operation and show id; only successes are stored, a decline releases the key; every replay answers 200 (ADR-020/021/029) |
+| Framework failures | Unmatched routes and bad methods answer inside the error envelope, not Starlette's default shape (ADR-023) |
 | Guests | Real user rows flagged `is_guest`, token-derived like any principal, upgradeable |
 | Rate limiting | Per-principal, generous on the reserve path, every ceiling env-tunable |
 | Audit | Bounded async queue, batched writer, never blocks a request |
@@ -52,6 +53,8 @@ These are settled. Each is argued in its own document and recorded as an ADR in 
 | [12-testing-and-burst.md](12-testing-and-burst.md) | Test strategy by layer, concurrency test design, burst script contract and output format |
 | [13-deployment.md](13-deployment.md) | Container build, Render topology, configuration and secrets, cold start handling, rollback, operational runbook |
 | [14-stage-plan.md](14-stage-plan.md) | Build stages with entry and exit gates, current status |
+| [15-tickets.md](15-tickets.md) | The ticket board: every requirement decomposed, with dependencies, observable `Done when` checks and a named proving test |
+| [16-decision-highlights.md](16-decision-highlights.md) | Curated record of the judgment calls and the defects caught before shipping, with provenance |
 | [99-ledger.md](99-ledger.md) | Append-only `ADR` / `LEARN` / `RISK` log |
 
 ## Invariants
@@ -67,3 +70,5 @@ Five statements that must hold at all times. Any code that can violate one is wr
 ## Reading order
 
 New to the project: this document, then [02-architecture.md](02-architecture.md), then [04-concurrency-and-atomicity.md](04-concurrency-and-atomicity.md) — the last one is where the service earns or loses its claim to correctness.
+
+Picking up work: [15-tickets.md](15-tickets.md) for what to build next, and [16-decision-highlights.md](16-decision-highlights.md) for why the design looks the way it does rather than the way it first did.

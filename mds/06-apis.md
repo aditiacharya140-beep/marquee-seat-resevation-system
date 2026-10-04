@@ -106,7 +106,9 @@ Guest token required.
 }
 ```
 
-Only `name`, `seats`, `price_paise` are required; the rest default from config. `seat_overrides` is how tiered pricing and layout metadata arrive without a second request.
+Only `name`, `seats`, `price_paise` are required; the rest default from config — `event_kind` from `DEFAULT_EVENT_KIND` and validated against `ALLOWED_EVENT_KINDS`, `currency` from `DEFAULT_CURRENCY`, `per_user_limit` and `hold_ttl_seconds` from their own settings. `seat_overrides` is how tiered pricing and layout metadata arrive without a second request.
+
+This is the one endpoint that **rejects** unknown body fields; see the conventions at the end of this document.
 
 **201**
 ```json
@@ -125,7 +127,7 @@ Only `name`, `seats`, `price_paise` are required; the rest default from config. 
 }
 ```
 
-`422 VALIDATION_ERROR` — empty `seats`, duplicate labels, negative or non-integer `price_paise`, label over the configured length, seat count over the configured maximum, an override naming a label not in `seats`.
+`422 VALIDATION_ERROR` — empty `seats`, duplicate labels, negative or non-integer `price_paise`, label over the configured length, seat count over the configured maximum, an override naming a label not in `seats`, an `event_kind` outside `ALLOWED_EVENT_KINDS`, or **any unknown field**.
 `403 FORBIDDEN` — non-admin.
 
 Show and all seats are created in one transaction. A validation failure creates nothing.
@@ -149,7 +151,9 @@ Show and all seats are created in one transaction. A validation failure creates 
 
 `available + held + confirmed == total_seats` always. Counts and seat rows come from one snapshot, so they can never disagree with each other.
 
-A seat whose hold has lapsed but has not been swept reports `available`, matching what a claim would see. `held_by` is **not** exposed — seat ownership is not public information. `held_until` is exposed because a waiting buyer benefits from knowing when a seat frees up.
+A seat whose hold has lapsed reports `available`, matching what a claim would see — status is derived on read from the single expression in `db/sql.py`, not read from the stored column, because nothing rewrites the stored column (ADR-017). `held_by` is **not** exposed — seat ownership is not public information. `held_until` is exposed because a waiting buyer benefits from knowing when a seat frees up.
+
+A `held` seat arises only from a reserve that opted into a hold; a default reserve goes straight to `confirmed`. All three states are reachable, which is what makes this contract honoured by behaviour rather than by a status nothing produces.
 
 `404 SHOW_NOT_FOUND`
 
@@ -175,12 +179,24 @@ Keyset pagination on `(created_at, id)`. `limit` is bounded by config. Seat deta
 Authenticated. Idempotency key **required**, from the `Idempotency-Key` header or the body. If both are present and differ → 422.
 
 ```json
-{ "seats": ["A12", "A13"], "idempotency_key": "d4f1…", "hold_ttl_seconds": 120 }
+{ "seats": ["A12", "A13"], "idempotency_key": "d4f1…" }
 ```
 
-`hold_ttl_seconds` is optional and clamped to the show's configured maximum.
+**`hold_ttl_seconds` is optional and selects between the two outcomes** (ADR-017). Omitted — the default and primary path — the seats are confirmed outright. Present, it is clamped to the show's configured maximum and the seats are held until `expires_at`.
 
-**201**
+**201 — no `hold_ttl_seconds`: confirmed**
+```json
+{
+  "reservation_id": "…", "show_id": "…", "user_id": "…",
+  "seats": ["A12", "A13"],
+  "amount_paise": 65000, "currency": "INR",
+  "status": "confirmed",
+  "confirmed_at": "2026-10-03T12:00:00Z",
+  "created_at": "2026-10-03T12:00:00Z"
+}
+```
+
+**201 — with `hold_ttl_seconds`: held**
 ```json
 {
   "reservation_id": "…", "show_id": "…", "user_id": "…",
@@ -192,7 +208,9 @@ Authenticated. Idempotency key **required**, from the `Idempotency-Key` header o
 }
 ```
 
-`user_id` is the token's subject. An identity field in the body has no effect.
+`expires_at` is present only on a held reservation and reports the TTL **actually applied** after clamping, which may be lower than the one requested. `confirmed_at` is present only on a confirmed one.
+
+`user_id` is the token's subject. An identity field in the body has no effect — and cannot, because no request model declares one (ADR-028). A reserve carrying `"user_id": "<someone else>"` therefore returns **201 owned by the token subject**, not 422.
 
 **Semantics: all-or-nothing.** If any requested seat is unavailable, nothing is claimed:
 
@@ -208,7 +226,7 @@ Authenticated. Idempotency key **required**, from the `Idempotency-Key` header o
 | 200 | — | idempotent replay of a prior success, `Idempotent-Replay: true` |
 | 409 | `SEAT_TAKEN` | any requested seat active for another principal, or a lock timeout |
 | 409 | `PER_USER_LIMIT` | would exceed the show's limit; `details.limit`, `details.currently_held` |
-| 409 | `IDEMPOTENCY_KEY_REUSED` | same key, different canonical body |
+| 409 | `IDEMPOTENCY_KEY_REUSED` | same key, different canonical request — including the **same body against a different show** |
 | 409 | `IDEMPOTENCY_IN_PROGRESS` | concurrent duplicate still running past the wait bound; `Retry-After` |
 | 409 | `SHOW_NOT_ON_SALE` | show is `draft` or `closed`, or outside its sale window |
 | 404 | `SHOW_NOT_FOUND` / `SEAT_NOT_FOUND` | unknown show, or a label not in this show |
@@ -216,9 +234,13 @@ Authenticated. Idempotency key **required**, from the `Idempotency-Key` header o
 | 429 | `RATE_LIMITED` | ceiling exceeded; `Retry-After` |
 | 401 | `UNAUTHENTICATED` | missing or invalid token |
 
-A replay returns the **original status code**, including an original decline — a 409 replayed as a 409. That is what exactly-once means for a request whose outcome was a decline.
+### Idempotency behaviour a client must code against
 
-Never 5xx. Lock timeouts, serialization failures, and pool pressure on this path are translated to 409 or retried within the request.
+- **A replay always answers 200**, never 201, with the stored body and `Idempotent-Replay: true` (ADR-029). Read the header, not the status, to tell "created" from "already created".
+- **Only successes are stored.** A request whose outcome was a decline releases the key, so retrying with the same key is a genuine new attempt that may succeed — the seat may have freed (ADR-020). Declines are not replayed.
+- **A key is bound to one show.** The fingerprint covers the operation, the show id from the path, the sorted de-duplicated labels, and `hold_ttl_seconds` when present. Reusing a key across shows is 409 `IDEMPOTENCY_KEY_REUSED` (ADR-021).
+
+Never 5xx. Lock timeouts, serialization failures, deadlocks and pool pressure on this path are translated to 409 or retried within the request. A `statement_timeout` is the exception and is deliberately not reachable here: it is configured above `lock_timeout`, so the lock timeout always fires first and a 503 on this path means a genuine fault (ADR-027).
 
 ---
 
@@ -235,18 +257,21 @@ Never 5xx. Lock timeouts, serialization failures, and pool pressure on this path
 
 Idempotent: confirming an already-confirmed reservation returns 200 with the same body.
 
-`409 RESERVATION_EXPIRED` — the hold lapsed; `details.status`
+Only a `held` reservation is confirmable through this route; a reserve with no `hold_ttl_seconds` arrives already confirmed and needs no call here.
+
+`409 RESERVATION_EXPIRED` — the hold lapsed; `details.status`. Returned whether or not the seats have since been re-claimed: the statement carries `hold_expires_at > now()`, so a lapsed hold is never promotable (ADR-022)
 `409 RESERVATION_CANCELLED`
-`409 SEAT_TAKEN` — the hold lapsed and a seat was re-claimed in the interim; the confirm is predicated on current ownership, so it cannot steal the seat back
+`409 SEAT_TAKEN` — a seat the reservation held is no longer its own; the confirm is predicated on current ownership, so it cannot steal the seat back
 `404 RESERVATION_NOT_FOUND` — unknown, or owned by another principal
 
 ### `POST /reservations/{id}/cancel` — owner only
 
 **200** `{ "reservation_id": "…", "status": "cancelled", "seats": ["A12","A13"], "cancelled_at": "…" }`
 
-Idempotent. Releases held seats to `available`; they are immediately re-bookable.
+Idempotent. Releases held seats to `available` and closes their claim rows; the seats are immediately re-bookable.
 
 `409 RESERVATION_CONFIRMED` — a confirmed reservation is not cancellable through this route
+`409 RESERVATION_EXPIRED` — the hold already lapsed, so its seats are already effectively available and there is nothing to release; reporting the real state beats a successful no-op
 `404 RESERVATION_NOT_FOUND` — including when owned by another principal, so reservation ids cannot be enumerated
 
 ### `GET /reservations`
@@ -292,9 +317,28 @@ Prometheus text format. Catalogue in [10-observability.md](10-observability.md).
 | Idempotency key | `Idempotency-Key` header preferred; body accepted; conflict between the two is 422 |
 | Replay marker | `Idempotent-Replay: true` on any replayed response |
 | Pagination | Keyset via opaque `cursor`; `limit` bounded by config; offset pagination is not offered |
-| Unknown body fields | Rejected with 422 — a silently ignored field hides client bugs, and `user_id` must never be silently accepted |
+| Unknown body fields | **Admin endpoints reject with 422; every other endpoint ignores** (ADR-028). See below |
 | Seat label order | Response `seats` arrays are sorted for stable comparison |
 | Money | Integer paise everywhere; no decimal string, no float, in any direction |
 | Time | RFC 3339 with `Z`; all server-generated from the database clock |
 | Trailing slashes | Not redirected; the canonical path is the one in the route table |
-| Errors | One envelope, always, including 422 and 429 |
+| Errors | One envelope, always, including 422, 429, and framework-level 404 and 405 |
+
+### Unknown body fields
+
+`POST /shows` — the only admin write — rejects unknown fields with 422. Its body becomes durable configuration: prices, per-user limit, hold TTL, per-seat overrides. A mistyped field name there silently produces a show that sells the wrong seats at the wrong price, discovered by customers, so failing loudly is far cheaper.
+
+Every other endpoint ignores unknown fields. Their effect is determined entirely by the path, the token subject and the named fields, so a stray field cannot change the outcome — and rejecting it would convert a harmless client quirk into a failed booking during exactly the on-sale the service exists for.
+
+Identity safety is **independent of this policy**: no request model anywhere declares an identity field, so there is nothing for a body value to bind to. A reserve carrying another principal's id answers 201 owned by the token subject, which is what REQ-005 requires and what a 422 would not demonstrate.
+
+### Framework-level failures
+
+A request that matches no route, or matches a path with an unsupported method, answers in the same envelope as everything else (ADR-023):
+
+| Status | Code | When |
+|---|---|---|
+| 404 | `ROUTE_NOT_FOUND` | no route matches the path. Includes a trailing-slash variant, since slashes are not redirected |
+| 405 | `METHOD_NOT_ALLOWED` | the path exists for other methods. The `Allow` header is preserved |
+
+Both are declines, logged at `info`. They are registered in the error-code registry like every other code; the full set of codes that appear in no endpoint table is listed in [08-error-logging.md](08-error-logging.md).
