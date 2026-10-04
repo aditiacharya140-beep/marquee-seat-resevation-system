@@ -27,7 +27,7 @@ A stage closes only when all five hold:
 | 4 The atomic claim | yes | yes | **yes** | Negative controls are not automated |
 | 5 Lifecycle | yes | yes | partly, with stage 4 | No permanent test for a cancel racing a claim at the expiry boundary |
 | 6 Observability | partly | yes | no | Rate limiting built; audit not built; only part of the metric catalogue exposed |
-| 7 Burst and hardening | partly | — | no | Passed live at 200 buyers, never at full scale; no spoof or lifecycle phase |
+| 7 Burst and hardening | partly | — | no | Passed live at the script's default size (400 buyers, 150 on a hot seat), not at the 20,000 the design is sized for; no spoof or lifecycle phase |
 | 8 Documentation | yes | — | — | No clean-clone verification; CI has never run |
 | 9 Monitoring view | no | — | — | Depends on audit |
 
@@ -78,7 +78,7 @@ Not started; optional; depends on audit.
 1. Enable GitHub Actions and get the workflow green. Until then nothing has been verified off one machine.
 2. Review the unreviewed stages — auth, shows, the rate limiter — with the same adversarial pass the claim path had.
 3. Decide how a principal earns the right to reserve (item 1 of future scope). It is the only known weakness with a product consequence.
-4. Run the burst at full scale against the live URL.
+4. Run the burst well beyond its default size against the live URL; the free instance is the limit, not the script.
 5. Audit, then the missing metrics.
 
 ## Local environment
