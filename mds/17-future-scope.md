@@ -96,4 +96,4 @@ Not built: a spoofed-identity phase, a confirm/cancel/re-book lifecycle phase, t
 
 ## 12. Out of scope by decision
 
-General admission (a capacity counter is a different mechanism with its own argument), read replicas, caching show state, multi-region writes, a virtual waiting room, and a UI. Reasons are in [11-scalability.md](11-scalability.md).
+General admission (a capacity counter is a different mechanism with its own argument), read replicas, caching show state, multi-region writes, and a virtual waiting room. Reasons are in [11-scalability.md](11-scalability.md).

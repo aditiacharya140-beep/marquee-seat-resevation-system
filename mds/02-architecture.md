@@ -154,4 +154,4 @@ No code branches on event kind. A reserved-seating concert and a screening trave
 | Audit trail, metrics middleware, exception boundary | Designed, not built: [17-future-scope.md](17-future-scope.md). |
 | Read replica | Reads are cheap and must be consistent with claims; a replica would introduce lag visible as an invariant violation. |
 | Payment integration | `amount_paise` is computed and recorded; capture is out of scope and the hold/confirm split is where it would attach. |
-| UI | Out of scope. |
+| UI | One static page served by this service; no build step, no second deployment ([18-frontend.md](18-frontend.md), ADR-036). |

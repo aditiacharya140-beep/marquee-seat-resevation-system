@@ -73,6 +73,9 @@ Domain counters inline in services; the availability gauge at scrape time; `Rate
 ### Stage 9 — Monitoring view
 Not started; optional; depends on audit.
 
+### Stage 10 — Web page
+Built ([18-frontend.md](18-frontend.md), ADR-036): three static files in `app/static/`, served at `/` and `/static/*`, exempt from rate limiting. `tests/integration/test_frontend.py` covers the serving; the page's behaviour was walked through in a real browser against a local database, not by an automated suite. Not adversarially reviewed.
+
 ## What to do next, in order
 
 1. Enable GitHub Actions and get the workflow green. Until then nothing has been verified off one machine.

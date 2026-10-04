@@ -4,9 +4,11 @@ Assigned-seat booking for ticketed events. One seat, one buyer, under any amount
 contention: N simultaneous requests for the same seat produce exactly one `201` and
 N−1 clean `409`s — never a double-sell, never a `5xx`.
 
-**Live:** <https://seat-reservation-vw5k.onrender.com> ([/docs](https://seat-reservation-vw5k.onrender.com/docs) · [/readyz](https://seat-reservation-vw5k.onrender.com/readyz) · [/metrics](https://seat-reservation-vw5k.onrender.com/metrics)) · **How it works and why it is race-free:** [WRITEUP.md](WRITEUP.md)
+**Live:** <https://seat-reservation-vw5k.onrender.com> — the root is a web page: pick seats on a map, book or hold them, manage bookings ([/docs](https://seat-reservation-vw5k.onrender.com/docs) · [/readyz](https://seat-reservation-vw5k.onrender.com/readyz) · [/metrics](https://seat-reservation-vw5k.onrender.com/metrics)) · **How it works and why it is race-free:** [WRITEUP.md](WRITEUP.md)
 
 FastAPI · asyncpg · PostgreSQL 16 · Alembic · Prometheus · Docker.
+
+![The seat map, with a held booking counting down](mds/img/frontend.png)
 
 ## Run it
 
@@ -78,6 +80,7 @@ curl -s $BASE/metrics | grep -E 'reservations_|seats_available'
 | `POST` | `/reservations/{id}/confirm` · `/cancel` | owner | for a hold |
 | `GET` | `/reservations` · `/reservations/{id}` | owner | own reservations only, paginated |
 | `GET` | `/healthz` · `/readyz` · `/metrics` | public | liveness · real DB query · Prometheus |
+| `GET` | `/` · `/static/*` | public | the web page: three static files, no build step ([mds/18-frontend.md](mds/18-frontend.md)) |
 
 Interactive docs at `/docs`.
 
@@ -115,6 +118,7 @@ app/services        orchestration and transaction boundaries
 app/repositories    all SQL — seat_repo.py is the claim
 app/db              pool, session guards, migrations, the effective-status expressions
 app/core            config, errors, logging, security, metrics
+app/static          the web page — index.html, app.css, app.js, served as they are
 tests/concurrency   one race test per invariant, against real Postgres
 burst/              the load script
 mds/                the design, kept in step with the code — start at mds/00-overview.md;

@@ -943,3 +943,13 @@ Locally there is no proxy and the socket peer is the client, so no test could ha
 
 **Consequences** A statement in 02–13 is a claim about the code and can be checked against it. This ledger is not rewritten: earlier entries describe what was decided at the time, and are superseded by later ones rather than edited.
 
+
+## ADR-036 — The web page is three static files served by the service itself
+
+**Date** 2026-10-05
+
+**Context** The service had no page, and `02-architecture.md` listed a UI as out of scope. A page was asked for. The options were a separate static site with its own deployment and CORS on the API, or files served by the existing service.
+
+**Choice** `app/static/` holds `index.html`, `app.css` and `app.js`; `GET /` returns the page and `/static/*` its assets. No framework, no build step. Both paths are exempt from rate limiting, so loading the page spends none of the visitor's `read` allowance. A missing asset answers `ROUTE_NOT_FOUND` in the envelope (ADR-023 still holds). The plan and what was built are in `18-frontend.md`.
+
+**Consequences** One URL and one deployment; the image changes by three files. The page adds nothing to the booking logic and uses only existing endpoints. It polls `GET /shows/{id}` every four seconds per open tab, which is `read` traffic keyed by principal. Until `RATE_LIMIT_TRUSTED_PROXY_HOPS` is corrected on Render (LEARN-018), every visitor's guest issuance and sign-in share a few address buckets, so several people using the page at once can lock each other out.
