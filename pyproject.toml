@@ -36,6 +36,9 @@ select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "SIM", "ASYNC", "S", "RET", 
 ignore = ["S101"]
 
 [tool.ruff.lint.per-file-ignores]
+# The module name is fixed by the layout in mds/02-architecture.md; every import of
+# it is absolute (`app.core.logging`), so the stdlib module is never shadowed.
+"app/core/logging.py" = ["A005"]
 "tests/*" = ["S", "ARG"]
 "burst/*" = ["S"]
 
