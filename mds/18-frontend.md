@@ -49,7 +49,7 @@ A list of shows, newest first: name, price, number of seats. "Load more" for the
 - Counts line: available / held / sold / total — the same numbers the API guarantees always add up.
 
 ### 4. My bookings
-The signed-in person's reservations: seats, amount, status. A held booking shows a live countdown with **Confirm** and **Cancel** buttons. An expired hold reads "expired".
+The signed-in person's reservations: seats, amount, status. A held booking shows a live countdown with **Confirm** and **Cancel** buttons. A confirmed booking has a **Cancel** button too, which asks first and then puts the seats back on sale (ADR-040). An expired hold reads "expired".
 
 ### Admin (only when signed in as admin)
 A small form: show name, price, and seats entered as a quick pattern (rows `A–E`, seats `1–10`) — creates a show.
