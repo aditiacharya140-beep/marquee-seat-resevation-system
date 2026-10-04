@@ -1,13 +1,16 @@
 from uuid import UUID
 
 from app.core.config import settings
-from app.core.constants import ShowStatus
+from app.core.constants import LogEvent, ShowStatus
 from app.core.error_codes import ErrorCode
 from app.core.errors import NotFoundError, ValidationError
+from app.core.logging import get_logger
 from app.db.session import acquire, transaction
 from app.domain.models import Page, Show, ShowDetail
 from app.helpers.pagination import page_of, parse_cursor
 from app.repositories import show_repo
+
+logger = get_logger(__name__)
 
 
 async def create_show(
@@ -71,3 +74,12 @@ async def list_shows(
             limit=limit + 1,
         )
     return page_of(shows, limit, lambda show: (show.created_at, show.id))
+
+
+async def delete_show(show_id: UUID) -> dict[str, int]:
+    async with transaction() as conn:
+        deleted = await show_repo.delete_show(conn, show_id)
+    if deleted is None:
+        raise NotFoundError(ErrorCode.SHOW_NOT_FOUND)
+    logger.warning(LogEvent.SHOW_DELETED, extra={"show_id": str(show_id), **deleted})
+    return deleted

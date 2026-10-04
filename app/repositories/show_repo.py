@@ -6,7 +6,7 @@ import asyncpg
 from app.core.constants import SeatStatus, ShowStatus
 from app.db.sql import SEAT_CLAIMABLE, SEAT_EFFECTIVE_STATUS
 from app.domain.models import SeatView, Show
-from app.repositories.base import current_request_id
+from app.repositories.base import contention_is_a_decline, current_request_id
 
 _SHOW_COLUMNS = """id, name, event_kind, price_paise, currency, per_user_limit,
                    hold_ttl_seconds, total_seats, status, created_at"""
@@ -156,3 +156,33 @@ async def available_by_show(conn: asyncpg.Connection, max_shows: int) -> dict[UU
         max_shows,
     )
     return {row["show_id"]: row["available"] for row in rows}
+
+
+async def delete_show(conn: asyncpg.Connection, show_id: UUID) -> dict[str, int] | None:
+    """Remove a show and everything booked on it. `None` if there is no such show.
+
+    The show row is locked first. Every claim takes a key-share lock on it through the
+    quota row's foreign key before it touches a seat, so this waits for claims already
+    in flight and makes later ones wait for it — after which they find no show. That
+    ordering, show before seats, is why this cannot deadlock against a claim.
+
+    Reservations go before the show because that foreign key does not cascade; seats
+    and quota rows cascade from the show. Completed idempotency keys go too, or a
+    retry would be answered with a reservation that no longer exists.
+    """
+    with contention_is_a_decline():
+        if await conn.fetchval("SELECT id FROM shows WHERE id = $1 FOR UPDATE", show_id) is None:
+            return None
+        booked = "SELECT id FROM reservations WHERE show_id = $1"
+        await conn.execute(
+            f"DELETE FROM reservation_seats WHERE reservation_id IN ({booked})", show_id
+        )
+        await conn.execute(
+            f"DELETE FROM idempotency_keys WHERE reservation_id IN ({booked})", show_id
+        )
+        reservations: str = await conn.execute(
+            "DELETE FROM reservations WHERE show_id = $1", show_id
+        )
+        seats: int = await conn.fetchval("SELECT count(*) FROM seats WHERE show_id = $1", show_id)
+        await conn.execute("DELETE FROM shows WHERE id = $1", show_id)
+    return {"reservations": int(reservations.split()[-1]), "seats": seats}

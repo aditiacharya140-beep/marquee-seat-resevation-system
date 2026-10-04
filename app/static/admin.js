@@ -217,7 +217,28 @@ async function loadShows() {
     } },
     { title: 'Created', render: (s) => new Date(s.created_at).toLocaleString('en-GB') },
     { title: 'Id', render: (s) => s.show_id, mono: true },
+    { title: '', render: (s) => el('button', {
+      class: 'btn small danger', type: 'button', text: 'Delete', onclick: () => deleteShow(s),
+    }) },
   ], items, 'No shows yet. Create one on the left.');
+}
+
+async function deleteShow(show) {
+  const taken = show.total_seats - show.available;
+  const warning = taken
+    ? `${taken} of its seats are booked or held; those bookings are deleted too.`
+    : 'Nobody has booked it.';
+  if (!window.confirm(`Delete "${show.name}"? ${warning} This cannot be undone.`)) return;
+  const result = $('show-result');
+  try {
+    const { deleted } = await api(`/shows/${show.show_id}`, { method: 'DELETE' });
+    result.className = 'small';
+    result.textContent = `Deleted "${show.name}": ${deleted.seats} seats, ${deleted.reservations} reservations.`;
+  } catch (error) {
+    result.className = 'small error';
+    result.textContent = error.message;
+  }
+  await loadShows();
 }
 
 /* ---------- audit ---------- */

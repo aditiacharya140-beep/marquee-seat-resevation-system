@@ -130,3 +130,47 @@ async def test_the_show_list_is_keyset_paginated_newest_first(
     assert "counts" not in first["items"][0]
     assert "seats" not in first["items"][0]
     assert bad_cursor.status_code == too_many.status_code == 422
+
+
+async def test_an_admin_deletes_a_show_and_everything_booked_on_it(
+    client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    new_show: Callable[..., Any],
+    new_guest: Callable[[], Any],
+) -> None:
+    show = await new_show(["A1", "A2", "A3"])
+    url = f"/shows/{show['show_id']}"
+    _, guest = await new_guest()
+    reserve_url = f"{url}/reserve"
+    booked = await client.post(
+        reserve_url, headers=guest | {"Idempotency-Key": "before-delete"}, json={"seats": ["A1"]}
+    )
+    held = await client.post(
+        reserve_url,
+        headers=guest | {"Idempotency-Key": "held-before-delete"},
+        json={"seats": ["A2"], "hold_ttl_seconds": 60},
+    )
+    assert (booked.status_code, held.status_code) == (201, 201)
+
+    as_guest = await client.delete(url, headers=guest)
+    anonymous = await client.delete(url)
+    deleted = await client.delete(url, headers=admin_headers)
+    again = await client.delete(url, headers=admin_headers)
+
+    assert (as_guest.status_code, anonymous.status_code) == (403, 401)
+    assert deleted.status_code == 200
+    assert deleted.json() == {
+        "show_id": show["show_id"],
+        "deleted": {"reservations": 2, "seats": 3},
+    }
+    assert again.status_code == 404
+    assert (await client.get(url)).json()["error"]["code"] == "SHOW_NOT_FOUND"
+    gone = await client.get(f"/reservations/{booked.json()['reservation_id']}", headers=guest)
+    assert gone.json()["error"]["code"] == "RESERVATION_NOT_FOUND"
+    # The same key is not replayed as a booking that no longer exists.
+    retry = await client.post(
+        reserve_url, headers=guest | {"Idempotency-Key": "before-delete"}, json={"seats": ["A1"]}
+    )
+    assert (retry.status_code, retry.json()["error"]["code"]) == (404, "SHOW_NOT_FOUND")
+    mine = await client.get("/reservations", headers=guest)
+    assert mine.json()["items"] == []

@@ -51,3 +51,10 @@ async def list_shows(
 @router.get("/{show_id}", response_model=ShowResponse, response_model_exclude_none=True)
 async def get_show(show_id: UUID) -> ShowResponse:
     return ShowResponse.of(await show_service.get_show(show_id))
+
+
+@router.delete("/{show_id}")
+async def delete_show(show_id: UUID, _admin: AdminUser) -> dict[str, object]:
+    """Removes the show, its seats and every reservation on it. There is no undo."""
+    deleted = await show_service.delete_show(show_id)
+    return {"show_id": show_id, "deleted": deleted}

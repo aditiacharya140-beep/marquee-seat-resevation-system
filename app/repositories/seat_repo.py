@@ -12,7 +12,7 @@ import asyncpg
 
 from app.core.constants import DeclineReason, LogEvent, LogLevel
 from app.core.error_codes import ErrorCode
-from app.core.errors import AuthError, ConflictError
+from app.core.errors import AuthError, ConflictError, NotFoundError
 from app.core.logging import get_logger
 from app.db.sql import SEAT_ACTIVE, SEAT_CLAIMABLE
 from app.domain.models import ClaimedSeat
@@ -34,8 +34,11 @@ async def lock_quota(conn: asyncpg.Connection, user_id: UUID, show_id: UUID) -> 
                 user_id,
                 show_id,
             )
-        except asyncpg.ForeignKeyViolationError:
-            # A validly signed token whose subject has no row.
+        except asyncpg.ForeignKeyViolationError as exc:
+            # The show was deleted between this request's read of it and its claim.
+            if "show" in (exc.constraint_name or ""):
+                raise NotFoundError(ErrorCode.SHOW_NOT_FOUND) from None
+            # Otherwise: a validly signed token whose subject has no row.
             raise AuthError(ErrorCode.UNAUTHENTICATED) from None
         await conn.execute(
             "SELECT 1 FROM user_show_quota WHERE user_id = $1 AND show_id = $2 FOR UPDATE",
