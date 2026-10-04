@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 import asyncpg
@@ -5,7 +6,7 @@ import asyncpg
 from app.core.constants import ReservationStatus
 from app.db.sql import RESERVATION_EFFECTIVE_STATUS
 from app.domain.models import ClaimedSeat, Reservation
-from app.repositories.base import current_request_id
+from app.repositories.base import contention_is_a_decline, current_request_id
 from app.repositories.seat_repo import backstop_violation
 
 _COLUMNS = """id, show_id, user_id, amount_paise, currency, hold_expires_at,
@@ -36,13 +37,14 @@ async def close_superseded_claims(conn: asyncpg.Connection, seat_ids: list[UUID]
     stay its own statement: folded into the insert as a CTE the two would share one
     snapshot with no defined order, and the insert could hit the index first (LEARN-009).
     """
-    result: str = await conn.execute(
-        """
-        UPDATE reservation_seats SET released_at = now()
-         WHERE seat_id = ANY($1::uuid[]) AND released_at IS NULL
-        """,
-        seat_ids,
-    )
+    with contention_is_a_decline():
+        result: str = await conn.execute(
+            """
+            UPDATE reservation_seats SET released_at = now()
+             WHERE seat_id = ANY($1::uuid[]) AND released_at IS NULL
+            """,
+            seat_ids,
+        )
     return int(result.split()[-1])
 
 
@@ -119,6 +121,40 @@ async def get_owned(
     return _reservation(row, row["effective_status"], list(row["labels"])) if row else None
 
 
+async def list_for_user(
+    conn: asyncpg.Connection,
+    user_id: UUID,
+    *,
+    show_id: UUID | None,
+    status: str | None,
+    after: tuple[datetime, UUID] | None,
+    limit: int,
+) -> list[Reservation]:
+    """Owner-scoped by construction. `status` filters on the effective status, so a
+    lapsed hold is found under `expired` and never under `held`."""
+    rows = await conn.fetch(
+        f"""
+        SELECT {_COLUMNS}, {RESERVATION_EFFECTIVE_STATUS} AS effective_status,
+               ARRAY(SELECT label FROM reservation_seats
+                      WHERE reservation_id = reservations.id ORDER BY label) AS labels
+          FROM reservations
+         WHERE user_id = $1
+           AND ($2::uuid IS NULL OR show_id = $2)
+           AND ($3::text IS NULL OR {RESERVATION_EFFECTIVE_STATUS} = $3)
+           AND ($4::timestamptz IS NULL OR (created_at, id) < ($4::timestamptz, $5::uuid))
+         ORDER BY created_at DESC, id DESC
+         LIMIT $6
+        """,
+        user_id,
+        show_id,
+        status,
+        after[0] if after else None,
+        after[1] if after else None,
+        limit,
+    )
+    return [_reservation(row, row["effective_status"], list(row["labels"])) for row in rows]
+
+
 async def cancel_owned(conn: asyncpg.Connection, reservation_id: UUID, user_id: UUID) -> bool:
     """The decision for a cancel: one guarded UPDATE whose row count is the answer."""
     return await _decide(
@@ -155,15 +191,18 @@ async def confirm_owned(conn: asyncpg.Connection, reservation_id: UUID, user_id:
 async def _decide(
     conn: asyncpg.Connection, statement: str, reservation_id: UUID, user_id: UUID
 ) -> bool:
-    row = await conn.fetchrow(statement, reservation_id, user_id, current_request_id())
+    # Waits on the reservation row if the owner double-submitted, so it can time out.
+    with contention_is_a_decline():
+        row = await conn.fetchrow(statement, reservation_id, user_id, current_request_id())
     return row is not None
 
 
 async def close_claims_for_reservation(conn: asyncpg.Connection, reservation_id: UUID) -> None:
-    await conn.execute(
-        """
-        UPDATE reservation_seats SET released_at = now()
-         WHERE reservation_id = $1 AND released_at IS NULL
-        """,
-        reservation_id,
-    )
+    with contention_is_a_decline():
+        await conn.execute(
+            """
+            UPDATE reservation_seats SET released_at = now()
+             WHERE reservation_id = $1 AND released_at IS NULL
+            """,
+            reservation_id,
+        )

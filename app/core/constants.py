@@ -66,6 +66,8 @@ class LogEvent(StrEnum):
     APP_ERROR = "app_error"
     VALIDATION_FAILED = "validation_failed"
     UNHANDLED_EXCEPTION = "unhandled_exception"
+    UNHANDLED_HTTP_EXCEPTION = "unhandled_http_exception"
+    READINESS_CHECK_FAILED = "readiness_check_failed"
     RESERVATION_CREATED = "reservation_created"
     RESERVATION_CANCELLED = "reservation_cancelled"
     RESERVATION_CONFIRMED = "reservation_confirmed"
@@ -79,11 +81,15 @@ class LogEvent(StrEnum):
 
 JWT_ALGORITHM: Final = "HS256"
 TOKEN_TYPE_ACCESS: Final = "access"  # noqa: S105 - a claim value, not a credential
+TOKEN_TYPE_REFRESH: Final = "refresh"  # noqa: S105
 TOKEN_TYPE_BEARER: Final = "bearer"  # noqa: S105
 #: Shape only. Deliverability is not something a pattern can establish.
-EMAIL_PATTERN: Final = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+EMAIL_PATTERN: Final = r"^[^@\s\x00-\x1f\x7f]+@[^@\s\x00-\x1f\x7f]+\.[^@\s\x00-\x1f\x7f]+$"
 PASSWORD_MAX_LENGTH: Final = 128
 CURRENCY_PATTERN: Final = r"^[A-Z]{3}$"
+#: No control characters. PostgreSQL text cannot hold NUL at all, so one reaching a
+#: statement is a driver error, and a driver error on a domain path is a 500.
+PRINTABLE_PATTERN: Final = r"^[^\x00-\x1f\x7f]+$"
 
 HEALTH_STATUS_OK: Final = "ok"
 

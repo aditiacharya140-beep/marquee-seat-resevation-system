@@ -59,3 +59,31 @@ async def test_confirm_promotes_a_hold_and_a_sold_seat_is_not_cancellable(
     assert fetched.json() == confirmed.json()
     counts = (await client.get(f"/shows/{show['show_id']}")).json()["counts"]
     assert counts == {"available": 0, "held": 0, "confirmed": 1, "total": 1}
+
+
+async def test_a_principal_lists_only_their_own_reservations(
+    client: httpx.AsyncClient, new_show: Callable[..., Any], new_guest: Callable[[], Any]
+) -> None:
+    show = await new_show(["A1", "A2", "A3", "A4"])
+    _, mine = await new_guest()
+    _, theirs = await new_guest()
+    made = [
+        (await reserve(client, show["show_id"], mine, [seat])).json()["reservation_id"]
+        for seat in ("A1", "A2", "A3")
+    ]
+    await reserve(client, show["show_id"], theirs, ["A4"])
+
+    first = (await client.get("/reservations", headers=mine, params={"limit": 2})).json()
+    second = (
+        await client.get(
+            "/reservations", headers=mine, params={"limit": 2, "cursor": first["next_cursor"]}
+        )
+    ).json()
+    held = (await client.get("/reservations", headers=mine, params={"status": "held"})).json()
+    anonymous = await client.get("/reservations")
+
+    listed = [item["reservation_id"] for item in first["items"] + second["items"]]
+    assert listed == made[::-1]
+    assert second["next_cursor"] is None
+    assert held["items"] == []
+    assert anonymous.status_code == 401

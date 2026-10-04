@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -36,6 +37,8 @@ async def create_show(
     per_user_limit: int,
     hold_ttl_seconds: int,
     labels: list[str],
+    seat_prices: list[int | None],
+    seat_sections: list[str | None],
 ) -> Show:
     """The show and every seat row. Seats are never inserted or deleted again, which is
     half of why `available + held + confirmed == total_seats` holds structurally."""
@@ -60,15 +63,18 @@ async def create_show(
     # One statement for the whole hall: a loop is a round trip per seat.
     await conn.execute(
         """
-        INSERT INTO seats (id, show_id, label, status, request_id)
-        SELECT seat.id, $1, seat.label, $4, $5
-          FROM unnest($2::uuid[], $3::text[]) AS seat (id, label)
+        INSERT INTO seats (id, show_id, label, price_paise, section, status, request_id)
+        SELECT seat.id, $1, seat.label, seat.price_paise, seat.section, $4, $5
+          FROM unnest($2::uuid[], $3::text[], $6::bigint[], $7::text[])
+               AS seat (id, label, price_paise, section)
         """,
         row["id"],
         [uuid4() for _ in labels],
         labels,
         SeatStatus.AVAILABLE.value,
         current_request_id(),
+        seat_prices,
+        seat_sections,
     )
     return _show(row)
 
@@ -76,6 +82,35 @@ async def create_show(
 async def get_show(conn: asyncpg.Connection, show_id: UUID) -> Show | None:
     row = await conn.fetchrow(f"SELECT {_SHOW_COLUMNS} FROM shows WHERE id = $1", show_id)
     return _show(row) if row else None
+
+
+async def list_shows(
+    conn: asyncpg.Connection,
+    *,
+    status: str | None,
+    event_kind: str | None,
+    after: tuple[datetime, UUID] | None,
+    limit: int,
+) -> list[Show]:
+    """Keyset on the immutable `(created_at, id)`, so paging through a catalogue that
+    is being booked neither skips nor repeats a show. Never touches `seats`."""
+    rows = await conn.fetch(
+        f"""
+        SELECT {_SHOW_COLUMNS}
+          FROM shows
+         WHERE ($1::text IS NULL OR status = $1)
+           AND ($2::text IS NULL OR event_kind = $2)
+           AND ($3::timestamptz IS NULL OR (created_at, id) < ($3::timestamptz, $4::uuid))
+         ORDER BY created_at DESC, id DESC
+         LIMIT $5
+        """,
+        status,
+        event_kind,
+        after[0] if after else None,
+        after[1] if after else None,
+        limit,
+    )
+    return [_show(row) for row in rows]
 
 
 async def list_seats(conn: asyncpg.Connection, show: Show) -> list[SeatView]:

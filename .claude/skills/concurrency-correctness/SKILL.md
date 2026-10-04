@@ -111,7 +111,7 @@ The key row is the ownership token and the unique constraint `(user_id, key)` de
 - A completed key replays the stored body as **200** with `Idempotent-Replay: true`, never 201 (ADR-029).
 - An `in_progress` key is polled for a bounded interval, then declines 409 `IDEMPOTENCY_IN_PROGRESS`.
 - Only successes are stored (ADR-020). A decline or a fault rolls T2 back and releases the key, so a retry genuinely re-attempts.
-- A key stuck `in_progress` past a staleness window is reclaimable, or the crash of one worker would poison a key forever.
+- A key stuck `in_progress` past a staleness window is reclaimable, or the crash of one worker would poison a key forever. **A reclaim rotates the key's id, and T2's first statement locks the key row by id** (ADR-033): "presumed dead" is a guess, and a slow owner must find its id gone rather than commit alongside its replacement.
 
 ## What the tests must prove
 
@@ -133,3 +133,4 @@ A test that would still pass against a read-then-write implementation is not tes
 - `2026-10-03` — Pool sizing is a correctness concern, not tuning (LEARN-003): local `max_connections` is 100 and the test suite draws from the same pool, so an oversized dev pool surfaces as connection errors that look like application defects. Size against the server ceiling.
 - `2026-10-04` — Brought into line with ADR-017/019/020/029, which the implementation follows: lazy-only expiry with no sweeper, superseded-row closure as a separate statement, only successes stored, replays answer 200. The skill had been teaching the superseded design.
 - `2026-10-04` — A migration path is verified only when the entrypoint has run it in the built image (LEARN-013); asyncpg session guards go in `server_settings`, not a `SET`, because the pool issues `RESET ALL` on release (LEARN-014).
+- `2026-10-04` — Key ownership is the row id, rotated on reclaim and locked first in T2 (ADR-033, LEARN-016). Rule earned by a real defect: recovery paths must be tested with the supposedly dead owner alive.

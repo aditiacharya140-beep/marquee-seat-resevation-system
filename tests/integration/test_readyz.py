@@ -7,7 +7,7 @@ import httpx
 from app.core.constants import NOT_READY_STATUS, READY_STATUS, Header
 from app.db.engine import database
 from app.db.session import acquire
-from tests.conftest import is_uuid
+from tests.conftest import LogCapture, is_uuid
 
 READYZ = "/readyz"
 
@@ -23,7 +23,12 @@ async def test_readyz_reports_ready_from_a_real_query(client: httpx.AsyncClient)
     assert is_uuid(response.headers.get(Header.REQUEST_ID))
 
 
-async def test_readyz_fails_closed_and_names_the_dependency(client: httpx.AsyncClient) -> None:
+async def test_readyz_fails_closed_uncached_and_liveness_is_unaffected(
+    client: httpx.AsyncClient, log_capture: LogCapture
+) -> None:
+    """Ready, then the database goes away, then not ready on the very next call: no
+    interval in which a cached answer could still say 200."""
+    assert (await client.get(READYZ)).status_code == 200
     await database.close()
 
     response = await client.get(READYZ)
@@ -33,6 +38,8 @@ async def test_readyz_fails_closed_and_names_the_dependency(client: httpx.AsyncC
     assert body["status"] == NOT_READY_STATUS
     assert body["checks"]["database"]["ok"] is False
     assert body["checks"]["database"]["error"]
+    assert log_capture.one(event="readiness_check_failed", level="warning")
+    assert (await client.get("/healthz")).status_code == 200
 
 
 async def test_session_guards_are_applied_and_survive_release(db: None) -> None:

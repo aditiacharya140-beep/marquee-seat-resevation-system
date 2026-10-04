@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 
 from app.api.routes import api_router
@@ -18,8 +19,8 @@ from app.core.constants import (
     LogLevel,
 )
 from app.core.context import set_outcome_code
-from app.core.error_codes import ErrorCode
-from app.core.errors import AppError, InternalError, ValidationError
+from app.core.error_codes import REGISTRY, ErrorCode
+from app.core.errors import AppError, InternalError, NotFoundError, ValidationError
 from app.core.logging import configure_logging, get_logger, level_number
 from app.core.metrics import unhandled_exceptions_total
 from app.db.engine import database
@@ -91,6 +92,25 @@ async def handle_validation_error(request: Request, exc: Exception) -> Response:
     return _error_response(error, request_id)
 
 
+async def handle_http_exception(request: Request, exc: Exception) -> Response:
+    """The router's own 404 and 405 answer in the service's envelope (ADR-023)."""
+    assert isinstance(exc, StarletteHTTPException)
+    error: AppError
+    if exc.status_code == REGISTRY[ErrorCode.ROUTE_NOT_FOUND].http_status:
+        error = NotFoundError(ErrorCode.ROUTE_NOT_FOUND)
+    elif exc.status_code == REGISTRY[ErrorCode.METHOD_NOT_ALLOWED].http_status:
+        # The router's Allow header says which methods the path does accept.
+        error = AppError(ErrorCode.METHOD_NOT_ALLOWED, headers=dict(exc.headers or {}))
+    else:
+        # Nothing in this service raises HTTPException, so any other status is a bug.
+        logger.error(
+            LogEvent.UNHANDLED_HTTP_EXCEPTION,
+            extra={"request_id": _request_id(request), "status": exc.status_code},
+        )
+        error = InternalError(ErrorCode.INTERNAL_ERROR)
+    return await handle_app_error(request, error)
+
+
 async def handle_unexpected_error(request: Request, exc: Exception) -> Response:
     request_id = _request_id(request)
     route = _route_label(request)
@@ -132,6 +152,7 @@ def create_app() -> FastAPI:
 
     app.add_exception_handler(AppError, handle_app_error)
     app.add_exception_handler(RequestValidationError, handle_validation_error)
+    app.add_exception_handler(StarletteHTTPException, handle_http_exception)
     app.add_exception_handler(Exception, handle_unexpected_error)
 
     app.include_router(api_router)

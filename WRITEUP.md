@@ -103,7 +103,11 @@ The key row is an ownership token; `UNIQUE (user_id, key)` decides who owns it.
 - **Only successes are stored.** A decline rolls T2 back and releases the key: a
   stored "taken" is a lie with a shelf life, and a retry should be a real attempt.
 - A key stuck `in_progress` past a staleness window (its owner died) is reclaimable by
-  one guarded `UPDATE`, so a crash cannot poison a key.
+  one guarded `UPDATE`, so a crash cannot poison a key. Taking a key over **rotates
+  its id**, and the claim's first statement locks the key row by id — so an owner that
+  was only slow, not dead, finds its id gone and stops before touching a seat. A test
+  written with the staleness window at zero found the original version let both the
+  old and the new owner proceed.
 
 ## Holds and expiry
 
@@ -165,6 +169,12 @@ fires whenever the product succeeds gets muted.
   20× concurrently, opposite-order multi-seat claims, reconciliation sampled
   mid-burst, lapsed-hold re-claim. Replacing the claim predicate with `true` fails
   four of the six, so they are testing the mechanism and not the happy path.
+- One adversarial review round, run by a separate agent executing probes against
+  PostgreSQL: it could not produce a double-sell, a deadlock, a limit breach or two
+  reservations for one key across several thousand randomized attempts. It did find
+  three inputs that returned a 500 where a 4xx was owed (a lock timeout on
+  confirm/cancel, a NUL character, a token for a missing user); each is fixed with a
+  test (LEARN-017).
 - Local burst, one uvicorn worker, pool of 20: 3,530 reserve requests in 9.6s with 500
   in flight — 705 created, 2,800 `SEAT_TAKEN`, 19 replays, 6 `PER_USER_LIMIT`, **zero
   5xx**, hot seat 1 winner of 500, every reconciliation check green. Latency at that
@@ -185,11 +195,15 @@ fires whenever the product succeeds gets muted.
 
 The design ([mds/](mds/00-overview.md)) covers more than was built. Not built: the
 audit table and its writer (structured logs carry `request_id`, and every row is
-stamped with it), rate limiting, guest upgrade, refresh tokens (access tokens last a
-day instead), the show and reservation list endpoints, sale windows, per-seat price
-overrides, and the latency/pool/lock-wait histograms. Unmatched routes still return
-the framework's default 404 shape rather than the service's envelope. None of these
-touch the claim path.
+stamped with it), rate limiting, sale windows, and the latency/pool/lock-wait
+histograms. An unhandled exception is still logged twice, once without its request
+id. None of these touch the claim path.
+
+One consequence of the missing rate limit is worth stating plainly: the per-user limit
+is per *principal*, guest principals are free to create, and a reserve confirms with
+no payment step. So the limit stops one account over-buying; it does not stop one
+client minting accounts (RISK-014). A per-IP ceiling on guest issuance is the next
+thing to build.
 
 ## AI usage
 

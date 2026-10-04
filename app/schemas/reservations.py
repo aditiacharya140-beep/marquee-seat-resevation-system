@@ -2,13 +2,21 @@
 nothing for a spoofed `user_id` to bind to (ADR-028); unknown fields are ignored."""
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field, StrictInt, field_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    SerializerFunctionWrapHandler,
+    StrictInt,
+    field_validator,
+    model_serializer,
+)
 
 from app.core.config import settings
 from app.core.constants import ReservationStatus
-from app.domain.models import Reservation
+from app.domain.models import Page, Reservation
 from app.schemas.shows import SeatLabel, reject_duplicate_labels
 
 
@@ -33,6 +41,12 @@ class ReservationResponse(BaseModel):
     cancelled_at: datetime | None = None
     created_at: datetime
 
+    @model_serializer(mode="wrap")
+    def _omit_what_does_not_apply(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """`expires_at` exists only on a hold and `confirmed_at` only once confirmed;
+        each is absent rather than null, wherever a reservation is rendered."""
+        return {key: value for key, value in handler(self).items() if value is not None}
+
     @classmethod
     def of(cls, reservation: Reservation) -> "ReservationResponse":
         return cls(
@@ -47,4 +61,16 @@ class ReservationResponse(BaseModel):
             confirmed_at=reservation.confirmed_at,
             cancelled_at=reservation.cancelled_at,
             created_at=reservation.created_at,
+        )
+
+
+class ReservationListResponse(BaseModel):
+    items: list[ReservationResponse]
+    next_cursor: str | None
+
+    @classmethod
+    def of(cls, page: Page[Reservation]) -> "ReservationListResponse":
+        return cls(
+            items=[ReservationResponse.of(reservation) for reservation in page.items],
+            next_cursor=page.next_cursor,
         )

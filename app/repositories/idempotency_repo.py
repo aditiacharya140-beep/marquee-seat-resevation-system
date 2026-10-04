@@ -13,6 +13,8 @@ from uuid import UUID, uuid4
 import asyncpg
 
 from app.core.constants import IdempotencyState
+from app.core.error_codes import ErrorCode
+from app.core.errors import AuthError
 from app.domain.models import IdempotencyRecord
 from app.repositories.base import current_request_id
 
@@ -27,6 +29,22 @@ async def try_claim(
     retention_hours: int,
 ) -> UUID | None:
     """The key's id if this request now owns it, `None` if someone else already does."""
+    try:
+        key_id = await _insert_key(conn, user_id, key, scope, fingerprint, retention_hours)
+    except asyncpg.ForeignKeyViolationError:
+        # A validly signed token whose subject has no user row.
+        raise AuthError(ErrorCode.UNAUTHENTICATED) from None
+    return key_id
+
+
+async def _insert_key(
+    conn: asyncpg.Connection,
+    user_id: UUID,
+    key: str,
+    scope: str,
+    fingerprint: str,
+    retention_hours: int,
+) -> UUID | None:
     key_id: UUID | None = await conn.fetchval(
         """
         INSERT INTO idempotency_keys (id, user_id, key, scope, request_fingerprint, state,
@@ -76,21 +94,46 @@ async def get(
 async def reclaim_if_stale(
     conn: asyncpg.Connection, key_id: UUID, stale_seconds: int
 ) -> UUID | None:
-    """Take over a key whose owner died mid-request. One guarded UPDATE, so of several
-    reclaimers exactly one wins: the rest re-check against a fresh `created_at`."""
-    reclaimed: UUID | None = await conn.fetchval(
-        """
-        UPDATE idempotency_keys
-           SET created_at = now(), request_id = $3
-         WHERE id = $1 AND state = 'in_progress'
-           AND created_at < now() - ($2::int * INTERVAL '1 second')
-        RETURNING id
-        """,
-        key_id,
-        stale_seconds,
-        current_request_id(),
-    )
+    """Take over a key whose owner is presumed dead, returning the key's NEW id.
+
+    The id is the ownership token, so taking over rotates it: if the old owner is in
+    fact alive, its `lock_owned`, `complete` and `release` all address an id that no
+    longer exists and it can neither commit a reservation nor delete the new owner's
+    key. One guarded UPDATE, so of several reclaimers exactly one wins. An owner that
+    has reached T2 holds the row lock, so this waits for it; if that wait times out the
+    owner is plainly alive and nothing is reclaimed.
+    """
+    try:
+        reclaimed: UUID | None = await conn.fetchval(
+            """
+            UPDATE idempotency_keys
+               SET id = $4, created_at = now(), request_id = $3
+             WHERE id = $1 AND state = 'in_progress'
+               AND created_at < now() - ($2::int * INTERVAL '1 second')
+            RETURNING id
+            """,
+            key_id,
+            stale_seconds,
+            current_request_id(),
+            uuid4(),
+        )
+    except asyncpg.LockNotAvailableError:
+        return None
     return reclaimed
+
+
+async def lock_owned(conn: asyncpg.Connection, key_id: UUID) -> bool:
+    """First statement of T2: prove this request still owns the key, and hold the row
+    so nobody can take it over until T2 ends. `False` means it was reclaimed."""
+    try:
+        row = await conn.fetchrow(
+            "SELECT 1 FROM idempotency_keys WHERE id = $1 AND state = $2 FOR UPDATE",
+            key_id,
+            IdempotencyState.IN_PROGRESS.value,
+        )
+    except asyncpg.LockNotAvailableError:
+        return False
+    return row is not None
 
 
 async def complete(

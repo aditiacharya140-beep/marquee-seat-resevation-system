@@ -2,12 +2,10 @@
 a change to one is a change to the other.
 
 Lock order for a claiming transaction, which is the whole of the deadlock argument:
-the principal's quota row first, then seat rows in ascending label order. Nothing in
-this module may take a quota lock after a seat lock.
+its own idempotency key row, then the principal's quota row, then seat rows in
+ascending label order. Nothing in this module may take a quota lock after a seat lock.
 """
 
-from collections.abc import Iterator
-from contextlib import contextmanager
 from uuid import UUID
 
 import asyncpg
@@ -18,32 +16,15 @@ from app.core.errors import AuthError, ConflictError
 from app.core.logging import get_logger
 from app.db.sql import SEAT_ACTIVE, SEAT_CLAIMABLE
 from app.domain.models import ClaimedSeat
-from app.repositories.base import current_request_id
+from app.repositories.base import contention_is_a_decline, current_request_id
 
 logger = get_logger(__name__)
-
-
-@contextmanager
-def _contention_is_a_decline() -> Iterator[None]:
-    """Losing a lock wait is an answer, not a fault: 409, never 5xx (ADR-016, ADR-027)."""
-    try:
-        yield
-    except asyncpg.LockNotAvailableError:
-        raise ConflictError(
-            ErrorCode.SEAT_TAKEN, details={"reason": DeclineReason.LOCK_TIMEOUT.value}
-        ) from None
-    except asyncpg.DeadlockDetectedError as exc:
-        # The lock order makes this unreachable; if it fires, the order was broken.
-        logger.error(LogEvent.CLAIM_DEADLOCK, exc_info=exc)
-        raise ConflictError(
-            ErrorCode.SEAT_TAKEN, details={"reason": DeclineReason.DEADLOCK.value}
-        ) from None
 
 
 async def lock_quota(conn: asyncpg.Connection, user_id: UUID, show_id: UUID) -> None:
     """Serialize this principal's concurrent reserves for this show. Always the FIRST
     lock a claim takes. The row is a lock target, never a tally."""
-    with _contention_is_a_decline():
+    with contention_is_a_decline():
         try:
             await conn.execute(
                 """
@@ -95,7 +76,7 @@ async def claim_many(
     Under READ COMMITTED a blocked row is re-checked against the committed version
     once its lock is granted, so a loser's predicate fails and the row drops out.
     """
-    with _contention_is_a_decline():
+    with contention_is_a_decline():
         rows = await conn.fetch(
             f"""
             WITH candidate AS (
@@ -155,7 +136,7 @@ async def labels_not_in_show(
 async def release_for_reservation(conn: asyncpg.Connection, reservation_id: UUID) -> list[str]:
     """Return a hold's seats, guarded on current ownership and on the hold being live,
     so it can never take a seat from whoever claimed it after a lapse (ADR-022)."""
-    with _contention_is_a_decline():
+    with contention_is_a_decline():
         rows = await conn.fetch(
             """
             WITH owned AS (
@@ -182,7 +163,7 @@ async def release_for_reservation(conn: asyncpg.Connection, reservation_id: UUID
 
 
 async def confirm_for_reservation(conn: asyncpg.Connection, reservation_id: UUID) -> list[str]:
-    with _contention_is_a_decline():
+    with contention_is_a_decline():
         rows = await conn.fetch(
             """
             WITH owned AS (

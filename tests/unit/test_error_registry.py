@@ -231,16 +231,13 @@ def test_an_operational_status_matches_the_registry(code: str) -> None:
     assert REGISTRY[ErrorCode[code]].http_status == OPERATIONAL_CODES[code]
 
 
-def test_the_codes_awaiting_seat_066_are_exactly_the_two_router_codes() -> None:
-    """Records the gap explicitly, so it closes deliberately rather than by accident.
-
-    When SEAT-066 lands this test fails, and the contract assertions above tighten
-    into the equality that mds/12-testing-and-burst.md specifies.
-    """
+def test_no_documented_code_is_unimplemented() -> None:
+    """SEAT-066 landed the two router codes, so the documents and the registry now
+    agree in both directions."""
     unimplemented = set(CONTRACT_CODES) | set(OPERATIONAL_CODES)
     unimplemented -= {code.value for code in ErrorCode}
 
-    assert unimplemented == {"ROUTE_NOT_FOUND", "METHOD_NOT_ALLOWED"}
+    assert unimplemented == set()
 
 
 # ---------------------------------------------------------------------------------

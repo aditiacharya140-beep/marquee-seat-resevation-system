@@ -75,3 +75,58 @@ async def test_an_unknown_show_is_404(client: httpx.AsyncClient) -> None:
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "SHOW_NOT_FOUND"
+
+
+async def test_seat_overrides_set_price_and_section_and_the_reserve_charges_them(
+    client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    new_guest: Callable[[], Any],
+) -> None:
+    created = await client.post(
+        "/shows",
+        headers=admin_headers,
+        json=BODY | {"seat_overrides": {"A12": {"price_paise": 40001, "section": "premium"}}},
+    )
+    unknown = await client.post(
+        "/shows", headers=admin_headers, json=BODY | {"seat_overrides": {"Z9": {"price_paise": 1}}}
+    )
+    _, guest = await new_guest()
+
+    assert created.status_code == 201
+    seats = {seat["label"]: seat for seat in created.json()["seats"]}
+    assert seats["A12"] == {
+        "label": "A12",
+        "status": "available",
+        "price_paise": 40001,
+        "section": "premium",
+    }
+    assert seats["A1"]["price_paise"] == 25000
+    assert unknown.status_code == 422
+
+    reserved = await client.post(
+        f"/shows/{created.json()['show_id']}/reserve",
+        headers=guest | {"Idempotency-Key": "tiered"},
+        json={"seats": ["A1", "A12"]},
+    )
+    # Exact integer sum of the price each seat carried at claim time.
+    assert reserved.json()["amount_paise"] == 25000 + 40001
+
+
+async def test_the_show_list_is_keyset_paginated_newest_first(
+    client: httpx.AsyncClient, new_show: Callable[..., Any]
+) -> None:
+    created = [(await new_show(["A1"]))["show_id"] for _ in range(3)]
+
+    first = (await client.get("/shows", params={"limit": 2})).json()
+    second = (
+        await client.get("/shows", params={"limit": 2, "cursor": first["next_cursor"]})
+    ).json()
+    bad_cursor = await client.get("/shows", params={"cursor": "not-a-cursor"})
+    too_many = await client.get("/shows", params={"limit": 100000})
+
+    assert [item["show_id"] for item in first["items"]] == created[:0:-1]
+    assert second["items"][0]["show_id"] == created[0]
+    # A catalogue row carries no seat counts: the list never scans seats.
+    assert "counts" not in first["items"][0]
+    assert "seats" not in first["items"][0]
+    assert bad_cursor.status_code == too_many.status_code == 422
