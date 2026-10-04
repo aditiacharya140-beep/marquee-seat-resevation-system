@@ -174,7 +174,7 @@ fires whenever the product succeeds gets muted.
 
 ## Evidence
 
-- **331 tests, 96% line and branch coverage of `app/`**, all against real PostgreSQL
+- **326 tests, 96% line and branch coverage of `app/`**, all against real PostgreSQL
   with the real migration; nothing is mocked. They have only ever run on the
   development machine: GitHub Actions is not enabled for the repository.
 - `tests/concurrency/` — one test per invariant against real PostgreSQL: hot seat (60
