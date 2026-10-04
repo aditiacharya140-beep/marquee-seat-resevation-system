@@ -943,3 +943,17 @@ Locally there is no proxy and the socket peer is the client, so no test could ha
 
 **Consequences** A statement in 02–13 is a claim about the code and can be checked against it. This ledger is not rewritten: earlier entries describe what was decided at the time, and are superseded by later ones rather than edited.
 
+## LEARN-019 — On Render the client is three entries from the right of `X-Forwarded-For`
+
+**Date** 2026-10-05
+
+Completes LEARN-018, by test against the live service from one machine:
+
+| `RATE_LIMIT_TRUSTED_PROXY_HOPS` | Observed |
+|---|---|
+| 1 | 429s named `10.25.16.5` and `10.26.34.133` — the platform's internal proxies. Every client shared a bucket |
+| 2 | 700 requests in a few seconds against a ceiling of 300 per 10s: **none** limited. The resolved address differed per request, so every request had its own bucket and the limiter was in effect off |
+| 3 | 500 requests: 89 limited, each naming the machine's own public address. Repeated with a different forged `X-Forwarded-For` on every request: still limited, still the real address |
+
+**Implication** Both wrong values failed silently in opposite directions — one throttled everyone together, the other throttled no one — and neither is visible from a test suite, a health check or a passing burst. The value is recorded in `render.yaml` with how it was established. Between the deploy of the limiter and this fix, the live service's rate limiting was first shared across all clients and then ineffective.
+

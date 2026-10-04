@@ -128,7 +128,6 @@ Two patterns are worth carrying forward. **Writing the correctness argument down
 | Item | Status |
 |---|---|
 | The per-user limit is per principal, and guests are free | Bounded by rate limiting, not closed. A payment step or verified identity is what closes it (RISK-014) |
-| The proxy-hop count on the live deployment | Found wrong by reading a live 429: the limiter was seeing the platform's internal address. Needs the right value set and verified (LEARN-018) |
 | Only the claim path has been adversarially reviewed | Auth, shows and the rate limiter have tests and no review |
 | CI has never run | GitHub Actions is not enabled for the repository |
 | Double log line on an unhandled exception | Both lines are JSON; one lacks a request id. The designed fix is an exception-boundary middleware |

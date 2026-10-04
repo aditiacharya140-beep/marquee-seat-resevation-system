@@ -214,9 +214,13 @@ a verified identity. Removing guests would not help: registration is exactly as 
 One thing only the live deployment could show. The client address is read from the
 right of `X-Forwarded-For` by a configured hop count, because the left is whatever
 the client sent. With the count at 1, a 429 from the deployed service named an
-internal `10.x` address: the platform's own proxy, shared by every client. Every 429
-names the address it was applied to precisely so that a wrong setting is visible from
-outside, and that is how this was found.
+internal `10.x` address: the platform's own proxy, shared by every client. At 2,
+700 requests in a few seconds were not limited at all: the address resolved
+differently on every request. At 3 the limiter names the caller's real address, and
+forging the header does not move it. Every 429 names the address it was applied to
+precisely so that a wrong setting is visible from outside; that is how the first was
+found, and counting requests that should have been refused is how the second was.
+Neither failure would have shown in a test suite or a passing burst.
 
 ## What is not built
 
