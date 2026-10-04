@@ -165,11 +165,21 @@ fires whenever the product succeeds gets muted.
   20× concurrently, opposite-order multi-seat claims, reconciliation sampled
   mid-burst, lapsed-hold re-claim. Replacing the claim predicate with `true` fails
   four of the six, so they are testing the mechanism and not the happy path.
-- Local burst, one uvicorn worker, pool of 20: 3,530 reserve requests in 8.5s with 500
-  in flight — 710 created, 2,795 `SEAT_TAKEN`, 19 replays, 6 `PER_USER_LIMIT`, **zero
+- Local burst, one uvicorn worker, pool of 20: 3,530 reserve requests in 9.6s with 500
+  in flight — 705 created, 2,800 `SEAT_TAKEN`, 19 replays, 6 `PER_USER_LIMIT`, **zero
   5xx**, hot seat 1 winner of 500, every reconciliation check green. Latency at that
-  depth is pool queueing (p95 ≈ 6.6s), not lock contention: the pool is sized to the
-  database's connection ceiling, and requests wait rather than fail.
+  depth: p50 0.8s, p95 3.1s. That is 500 requests sharing 20 connections and one
+  Python process — requests wait rather than fail — and it was not tuned or profiled.
+- **Live burst** against the Render free instance (`./burst.sh <URL> --users 200 --hot
+  80`): 310 reserve requests — 106 created, 179 `SEAT_TAKEN`, 19 replays, 6
+  `PER_USER_LIMIT`, hot seat 1 winner of 80, 23 mid-flight reconciliation samples
+  green, `/metrics` equal to the API, `unhandled_exceptions_total` unmoved, zero 5xx.
+  An earlier run of the same burst had one response in 310 that was not JSON. Every
+  correctness check passed on that run too and the service's own fault counter did not
+  move, but the cause was not established: the script at the time discarded the status
+  code, and a redeploy was in progress. The script now records the status and whether
+  the service or the platform's proxy answered. No live latency figure is quoted,
+  because the script was then timing its own client-side queue as well.
 
 ## What was cut, honestly
 

@@ -69,6 +69,9 @@ class Run:
         started = time.perf_counter()
         try:
             async with self.limiter:
+                # Timed from here, not from before the limiter: time spent queued in
+                # this script is not the service's latency.
+                started = time.perf_counter()
                 response = await self.client.post(
                     f"/shows/{self.show_id}/reserve",
                     headers={
