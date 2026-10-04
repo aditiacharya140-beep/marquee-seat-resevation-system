@@ -54,6 +54,8 @@ Recorded honestly, because several materially improved the design and two preven
 | *"Should we keep holds as well?"* | Turned a binary into the right design: `confirmed` as the default path, holds available opt-in. Keeps all three seat states genuinely reachable while removing the second-winner risk from the path that load actually exercises. ADR-017 |
 | *"This is alarming"*, on reading that guests made the seat limit bypassable | Rate limiting, cut for the deadline, was built the same hour — and the write-up says plainly that it narrows the loophole rather than closing it |
 | *"Should we remove guests completely?"* | Kept, after the reasoning: registration is exactly as free as a guest, so removing guests deletes a tested feature without closing anything |
+| Pasting the original brief back in and asking what was under-delivered | Found three things the AI had not flagged: cancel refused a confirmed booking, rate limiting would have turned a reviewer's burst into 429s, and reviewers had no admin sign-in. All three were the AI following its own documents past the brief (ADR-040, ADR-041, ADR-044) |
+| *"I don't see a cancel option"*, from using the page | The button had not followed the service change. Found by a person using it, not by a test |
 | *"Sync the mds with our codebase"* | The design set now describes what is built, with one document for what is not (ADR-035) |
 | *"Reason with me"* on the list endpoint | Surfaced that a performance guarantee in the repository contract — *"never scans seats, reads precomputed counts"* — was unsupported by the schema. There were no such counts, and the only way to create them was the denormalised tally already rejected. Would have shipped as an inconsistency |
 | *"This is broken right? I lost my booked ticket the moment my token refreshes"*, on the web page | Correct, and found by using the page rather than by any test: a guest's ticket was reachable only through a one-hour token held in the tab. The page now requires an account at the moment of booking. The user's first suggestion, a mobile number, was reasoned out of: without an OTP it would let anyone who knows a number read its tickets. ADR-037 |
@@ -132,6 +134,6 @@ Two patterns are worth carrying forward. **Writing the correctness argument down
 | Only the claim path has been adversarially reviewed | Auth, shows and the rate limiter have tests and no review |
 | CI has never run | GitHub Actions is not enabled for the repository |
 | Double log line on an unhandled exception | Both lines are JSON; one lacks a request id. The designed fix is an exception-boundary middleware |
-| The full-scale burst | Passed live at the default size (400 buyers, 150 on one seat); nothing near the 20,000 the design is sized for has been run |
+| The full-scale burst on the live instance | Passed live at the default size, and at 20,000 buyers locally. The free instance serves about 19 bookings a second and cannot be scaled from here |
 
 Everything else that is designed and unbuilt is in [17-future-scope.md](17-future-scope.md).

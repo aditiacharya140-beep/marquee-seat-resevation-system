@@ -4,7 +4,7 @@ RUFF    := .venv/bin/ruff
 MYPY    := .venv/bin/mypy
 PORT    ?= 8000
 
-.PHONY: help lint format types test unit integration concurrency run verify migrate
+.PHONY: help lint format types test unit integration concurrency run verify migrate burst
 
 help:
 	@printf '%-14s %s\n' \
@@ -16,6 +16,7 @@ help:
 	  integration 'integration tests only' \
 	  concurrency 'concurrency tests only' \
 	  run         'uvicorn with reload on $$PORT' \
+	  burst       'the on-sale stampede: make burst URL=<base url>' \
 	  verify      'local toolchain and service check'
 
 lint:
@@ -45,6 +46,10 @@ run:
 
 migrate:
 	$(PY) -m alembic -c app/alembic.ini upgrade head
+
+# make burst URL=https://… — needs ADMIN_EMAIL and ADMIN_PASSWORD, or a local .env
+burst:
+	./burst.sh $(URL)
 
 verify:
 	./scripts/verify-env.sh

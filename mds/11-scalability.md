@@ -58,7 +58,7 @@ pool_per_instance    = usable_connections / instance_count − one kept back
 
 The pool is sized by what the **database** can serve, never by expected request concurrency. Postgres backends are processes; a pool larger than the database's ceiling converts a queue the application controls into refusals the application cannot control.
 
-Excess concurrency therefore queues **at the pool**, which is the right place for it: the wait is bounded by an acquire timeout, and a request that exceeds it returns 503 `DATABASE_UNAVAILABLE` — the single legitimate 5xx in the service. Keeping it at zero under a full-scale burst is a sizing exercise, and the alert that should precede it — pool waiters sustained above zero — cannot be raised yet, because the pool gauges are not exposed ([17-future-scope.md](17-future-scope.md), item 4).
+Excess concurrency therefore queues **at the pool**, which is the right place for it: the wait is bounded by an acquire timeout, and a request that exceeds it returns 503 `DATABASE_UNAVAILABLE` — the single legitimate 5xx in the service. Keeping it at zero under a full-scale burst is a sizing exercise, and the alert that should precede it — pool waiters sustained above zero — cannot be raised yet, because the pool gauges are not exposed ([17-future-scope.md](17-future-scope.md), item 3).
 
 A 20,000-request burst against a pool of, say, 20 means a queue roughly 1,000 deep. At ~6 round trips of a few milliseconds each, that drains in single-digit seconds. **The acquire timeout must exceed that drain time**, or correct requests are refused for a queue that was about to serve them. This is the one number most likely to produce a spurious 5xx under load, so it is configured generously and measured by the burst script.
 
@@ -70,15 +70,16 @@ That requirement cannot be a startup check, because drain time depends on burst 
 
 ## What has been measured
 
-Not the 20,000-request burst the design is sized for. What exists:
+The 20,000-request burst the design is sized for has been run locally, not on the live instance:
 
 | Run | Result |
 |---|---|
 | Local, one uvicorn worker, pool of 20, 500 requests in flight | 3,530 reserves in 9.6s; p50 0.8s, p95 3.1s; zero 5xx |
 | Reviewer's in-process hot seat, 2,500 principals on one seat | One 201, 2,499 × 409, no 503, 1.2s |
-| Live, Render free instance, 400 buyers + 150 on a hot seat, 50 in flight, rate limiting on | 580 reserves in 31s; every invariant held, one winner of 150, zero 5xx; p50 2.2s, p95 7.1s |
+| Local, one worker, pool of 20, **20,000 buyers**, 5,000 in flight, audit on | 20,531 reserves in 99s; zero 5xx, zero dropped, one winner of 500; p50 11s |
+| Live, Render free instance, 400 buyers + 150 on a hot seat, 50 in flight | 581 reserves in 31s (about 19 a second); every invariant held, zero 5xx; p50 2.1s, p95 6.5s |
 
-At 500 in flight against a pool of 20 the time is spent queueing for a connection and in one Python process, not waiting on row locks. Nothing has been profiled or tuned, and the acquire timeout has not been checked against the drain time of a full-scale burst.
+Locally the time is spent in front of the handler, in one Python process: the audit trail times a reserve at about 5 ms at the innermost layer while clients see seconds. On the free instance the same reserve takes about two seconds *inside* the handler at 50 in flight — a fraction of a CPU shared by every step. Neither is lock contention. The pool-acquire timeout is 60 seconds, so that under a burst far larger than the pool a request waits rather than being refused with a 503; at 20,000 buyers locally none was refused.
 
 ## Horizontal scaling
 

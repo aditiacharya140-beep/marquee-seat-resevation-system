@@ -1031,3 +1031,27 @@ The audit trail measures duration at the innermost layer. Over a local burst of 
 
 **Consequences** There is no undo, no soft delete and no refund, because there is no payment. Audit rows for the show remain: the trail has no foreign keys. With the demo's admin sign-in published (ADR-041), anyone can delete a show on the live demo, including one a reviewer is testing against. Closing a show while keeping its bookings is still future scope.
 
+## ADR-044 — Final phase: the repository's configuration is the deployment's
+
+**Date** 2026-10-05
+
+**Context** Re-reading the brief: reviewers clone the repository, run it, and fire their own burst of about 20,000 reservations at a fresh show. Several things in the repository would have met them badly.
+
+**Choice**
+- `docker-compose.yml` and `render.yaml` declare the demo configuration the live service runs — rate limiting off, hour-long access tokens, the published admin sign-in — so a clean checkout behaves as the live URL does. Before this, a reviewer running compose would have been rate limited where the live service is not.
+- `DB_ACQUIRE_TIMEOUT_SECONDS` defaults to 60, not 10. A request that outwaits it gets a 503, and the brief's bar is zero 5xx: under a burst far larger than the pool, waiting is the correct outcome.
+- `MAX_SEATS_PER_SHOW` defaults to 50,000, not 5,000. "A hall of N numbered seats" has no small ceiling, and a 422 on show creation would stop a reviewer's script at its first request.
+- A show response carries `id` as well as `show_id`: the brief says a show is returned "with an id".
+- The pages are branded **Marquee**. `SERVICE_NAME` stays `seat-reservation`: it is the token issuer and the `service` field of every log line.
+- `make burst URL=…`, which the brief names as an acceptable form.
+
+**Consequences** The defaults in `.env.example` still describe a production-leaning service (limiting on, 15-minute tokens); the two deploy files override them and say why. `19-brief-compliance.md` maps the brief to the code.
+
+## LEARN-021 — On the free instance the time is inside the handler
+
+**Date** 2026-10-05
+
+Qualifies LEARN-020. The live audit trail, over a 581-reserve burst at 50 in flight, recorded p50 2.0 s and p95 6.0 s for the reserve route at the innermost layer — where the local figure was 5 ms. On a fraction of a CPU every awaited step of every in-flight request competes for the same sliver of processor, so the handler itself is slow, not only the queue in front of it.
+
+**Implication** The two environments are slow for different reasons, and neither is lock contention. Locally the lever is process count; on the free instance it is CPU, which cannot be bought from here.
+

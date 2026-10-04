@@ -1,4 +1,6 @@
-# Overview
+# Overview — Marquee
+
+"Marquee" is the name people see, on the booking page and the admin console. The service identifier in logs, tokens and `/healthz` is still `seat-reservation`.
 
 A JSON HTTP API that sells assigned seats for ticketed events. It is the system of record for who holds and who owns each seat, and its defining requirement is correctness under contention: tens of thousands of concurrent buyers, many fighting over the same seat, with exactly one winner per seat and no server errors anywhere in the loss path.
 
@@ -58,6 +60,8 @@ These are settled. Each is argued in its own document and recorded as an ADR in 
 | [15-tickets.md](15-tickets.md) | The original ticket board, with a status table at the top. Its `Done when` lines predate several ADRs and are not the authority where they disagree |
 | [16-decision-highlights.md](16-decision-highlights.md) | Curated record of the judgment calls and the defects caught before shipping, with provenance |
 | [17-future-scope.md](17-future-scope.md) | Everything designed or found to be needed that is **not** in the code |
+| [18-frontend.md](18-frontend.md) | The booking page |
+| [19-brief-compliance.md](19-brief-compliance.md) | The original problem statement, line by line, against the code |
 | [99-ledger.md](99-ledger.md) | Append-only `ADR` / `LEARN` / `RISK` log |
 
 ## What this set describes

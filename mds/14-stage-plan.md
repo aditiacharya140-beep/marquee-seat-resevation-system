@@ -27,9 +27,9 @@ A stage closes only when all five hold:
 | 4 The atomic claim | yes | yes | **yes** | Negative controls are not automated |
 | 5 Lifecycle | yes | yes | partly, with stage 4 | No permanent test for a cancel racing a claim at the expiry boundary |
 | 6 Observability | yes | yes | no | Rate limiting, the audit trail and an admin console are built. The HTTP latency histogram and pool gauges are not on `/metrics` |
-| 7 Burst and hardening | partly | — | no | Passed live at the script's default size (400 buyers, 150 on a hot seat), not at the 20,000 the design is sized for; no spoof or lifecycle phase |
+| 7 Burst and hardening | yes | — | no | Passed live at the script's default size (400 buyers, 150 on a hot seat) and locally at 20,000 buyers. The free instance cannot serve the larger size |
 | 8 Documentation | yes | — | — | No clean-clone verification; CI has never run |
-| 9 Monitoring view | yes | through its API | no | The admin console. Not checked across browsers |
+| 9 Monitoring view | yes | through its API, and viewed in one browser | no | The admin console. Not checked across browsers |
 
 Everything in the right-hand column is described in [17-future-scope.md](17-future-scope.md).
 

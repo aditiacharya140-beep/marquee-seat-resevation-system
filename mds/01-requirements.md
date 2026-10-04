@@ -144,7 +144,7 @@ A seat released by cancel or expiry can be reserved by any principal with no res
 **REQ-041** `M` `system` — Readiness fails closed.
 `GET /readyz` executes a real query against the database. With the database unreachable it returns 503 with the failing dependency named. It never reports ready on a cached result.
 
-**REQ-042** `M` `system` — Metrics. **Partly met:** the counters, the availability gauge and `unhandled_exceptions_total` are exposed; the latency histogram, `db_pool_waiting`, the lock-wait histogram and the audit series are not ([17-future-scope.md](17-future-scope.md), item 4).
+**REQ-042** `M` `system` — Metrics. **Partly met:** the counters, the availability gauge and `unhandled_exceptions_total` are exposed; the latency histogram, `db_pool_waiting`, the lock-wait histogram and the audit series are not ([17-future-scope.md](17-future-scope.md), item 3).
 `GET /metrics` exposes Prometheus text format including: reservations confirmed (counter), reservations declined by reason (counter, labelled `seat_taken` / `per_user_limit` / `idempotent_replay` / `show_not_on_sale` / `lock_timeout`), seats available (gauge, labelled by show), request latency (histogram by route and status), audit queue depth and drops, and three operational series without which other requirements cannot be verified: `unhandled_exceptions_total` (the direct measurement of REQ-048), `db_pool_waiting` (the precursor to a 503), and `seat_claim_lock_wait_seconds` (hot-seat contention approaching `lock_timeout`).
 
 **REQ-043** `M` `system` — Metrics reconcile.

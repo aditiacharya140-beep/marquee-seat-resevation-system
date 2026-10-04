@@ -1,5 +1,7 @@
 # Frontend
 
+The page is branded **Marquee**. It links to the admin console at `/admin`, which is a separate page described in [10-observability.md](10-observability.md).
+
 A small web page for the seat reservation service: browse shows, pick seats on a seat map, book them, and manage bookings. Clean, deep-navy theme. **Built** on the `stage-4-frontend` branch as planned below; what differs from the plan is listed under [As built](#as-built).
 
 ## The short answers
@@ -121,7 +123,7 @@ The service's default event kind is `cinema`, and the page is dressed for it. No
 - **Price tiers are headed on the map.** Consecutive rows whose seats share one section and price sit under a heading such as `Recliner · ₹450`. A seat is marked "own price" only in a row that is not uniform.
 - **Rows of 14 or more get two aisles**, a quarter of the way in from each side. This is drawing only; the labels are untouched.
 - **A hall that does not form short lettered rows is drawn as a wrapped grid** with full labels — a row of more than 26 seats, or labels with no row letter.
-- **Shows left behind by the load test are not listed, and neither are bookings on them.** `burst/burst.py` names its shows `burst-…`, and the page skips that prefix; they are still reachable by id. The API has no way to close or delete a show; `scripts/delete_burst_shows.py` removes them, and what was booked on them, from the database directly.
+- **Shows left behind by the load test are not listed, and neither are bookings on them.** `burst/burst.py` names its shows `burst-…`, and the page skips that prefix; they are still reachable by id. An admin can delete a show from the admin console or with `DELETE /shows/{id}`; `scripts/delete_burst_shows.py` removes all of them at once, from the database directly.
 - **Bookings are drawn as tickets**, with a short booking id taken from the reservation id.
 - **Messages appear at the top of the page**, so one never covers the Confirm button it is about.
 - **`scripts/seed_demo.py` fills a deployment with a programme**: six films in a three-tier hall, about a third of each sold through the real guest-and-reserve path. It skips a show whose name already exists.

@@ -174,3 +174,22 @@ async def test_an_admin_deletes_a_show_and_everything_booked_on_it(
     assert (retry.status_code, retry.json()["error"]["code"]) == (404, "SHOW_NOT_FOUND")
     mine = await client.get("/reservations", headers=guest)
     assert mine.json()["items"] == []
+
+
+async def test_a_show_carries_its_id_under_the_brief_s_name_and_a_big_hall_is_accepted(
+    client: httpx.AsyncClient, admin_headers: dict[str, str]
+) -> None:
+    """The brief says a created show is returned "with an id"; and a hall is N seats,
+    with no small ceiling on N."""
+    seats = [f"R{row:03d}-{seat:02d}" for row in range(150) for seat in range(40)]
+
+    created = await client.post(
+        "/shows", headers=admin_headers, json={"name": "arena", "seats": seats, "price_paise": 1}
+    )
+
+    assert created.status_code == 201
+    show = created.json()
+    assert show["id"] == show["show_id"]
+    assert show["total_seats"] == len(seats) == 6000
+    assert show["counts"] == {"available": 6000, "held": 0, "confirmed": 0, "total": 6000}
+    assert (await client.delete(f"/shows/{show['id']}", headers=admin_headers)).status_code == 200
