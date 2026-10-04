@@ -142,6 +142,7 @@ There are exactly two kinds of transaction that lock more than one row, and each
 
 | Tier | A claim (`reserve`) | A `confirm` or `cancel` |
 |---|---|---|
+| 0 | Its own `idempotency_keys` row, by id (ADR-033) | — |
 | 1 | The `user_show_quota` row for its own principal | Its own `reservations` row |
 | 2 | Seat rows, **ascending `label`** | Seat rows, **ascending `label`** |
 | 3 | `reservation_seats` rows for seats already locked at tier 2 | `reservation_seats` rows for seats already locked at tier 2 |

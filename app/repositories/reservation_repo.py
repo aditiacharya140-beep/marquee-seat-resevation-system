@@ -6,7 +6,7 @@ import asyncpg
 from app.core.constants import ReservationStatus
 from app.db.sql import RESERVATION_EFFECTIVE_STATUS
 from app.domain.models import ClaimedSeat, Reservation
-from app.repositories.base import current_request_id
+from app.repositories.base import contention_is_a_decline, current_request_id
 from app.repositories.seat_repo import backstop_violation
 
 _COLUMNS = """id, show_id, user_id, amount_paise, currency, hold_expires_at,
@@ -37,13 +37,14 @@ async def close_superseded_claims(conn: asyncpg.Connection, seat_ids: list[UUID]
     stay its own statement: folded into the insert as a CTE the two would share one
     snapshot with no defined order, and the insert could hit the index first (LEARN-009).
     """
-    result: str = await conn.execute(
-        """
-        UPDATE reservation_seats SET released_at = now()
-         WHERE seat_id = ANY($1::uuid[]) AND released_at IS NULL
-        """,
-        seat_ids,
-    )
+    with contention_is_a_decline():
+        result: str = await conn.execute(
+            """
+            UPDATE reservation_seats SET released_at = now()
+             WHERE seat_id = ANY($1::uuid[]) AND released_at IS NULL
+            """,
+            seat_ids,
+        )
     return int(result.split()[-1])
 
 
@@ -190,15 +191,18 @@ async def confirm_owned(conn: asyncpg.Connection, reservation_id: UUID, user_id:
 async def _decide(
     conn: asyncpg.Connection, statement: str, reservation_id: UUID, user_id: UUID
 ) -> bool:
-    row = await conn.fetchrow(statement, reservation_id, user_id, current_request_id())
+    # Waits on the reservation row if the owner double-submitted, so it can time out.
+    with contention_is_a_decline():
+        row = await conn.fetchrow(statement, reservation_id, user_id, current_request_id())
     return row is not None
 
 
 async def close_claims_for_reservation(conn: asyncpg.Connection, reservation_id: UUID) -> None:
-    await conn.execute(
-        """
-        UPDATE reservation_seats SET released_at = now()
-         WHERE reservation_id = $1 AND released_at IS NULL
-        """,
-        reservation_id,
-    )
+    with contention_is_a_decline():
+        await conn.execute(
+            """
+            UPDATE reservation_seats SET released_at = now()
+             WHERE reservation_id = $1 AND released_at IS NULL
+            """,
+            reservation_id,
+        )

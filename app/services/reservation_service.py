@@ -7,6 +7,7 @@ claim, superseded-row closure, reservation, key completion — atomic as one uni
 """
 
 import asyncio
+import re
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -16,6 +17,7 @@ from app.core import metrics
 from app.core.config import settings
 from app.core.constants import (
     IDEMPOTENCY_OPERATION_RESERVE,
+    PRINTABLE_PATTERN,
     DeclineReason,
     Header,
     IdempotencyState,
@@ -72,10 +74,15 @@ def _resolve_key(header_key: str | None, body_key: str | None) -> str:
             message="Idempotency-Key header and idempotency_key body field differ",
         )
     key = header_key or body_key
-    if not key or len(key) > settings.idempotency_key_max_length:
+    if (
+        not key
+        or len(key) > settings.idempotency_key_max_length
+        or not re.fullmatch(PRINTABLE_PATTERN, key)
+    ):
         raise ValidationError(
             ErrorCode.VALIDATION_ERROR,
-            message="An idempotency key is required, in the Idempotency-Key header or the body",
+            message="A printable idempotency key is required, in the Idempotency-Key header "
+            "or the body",
             details={"max_length": settings.idempotency_key_max_length},
         )
     return key

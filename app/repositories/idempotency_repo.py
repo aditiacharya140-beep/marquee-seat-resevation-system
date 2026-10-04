@@ -13,6 +13,8 @@ from uuid import UUID, uuid4
 import asyncpg
 
 from app.core.constants import IdempotencyState
+from app.core.error_codes import ErrorCode
+from app.core.errors import AuthError
 from app.domain.models import IdempotencyRecord
 from app.repositories.base import current_request_id
 
@@ -27,6 +29,22 @@ async def try_claim(
     retention_hours: int,
 ) -> UUID | None:
     """The key's id if this request now owns it, `None` if someone else already does."""
+    try:
+        key_id = await _insert_key(conn, user_id, key, scope, fingerprint, retention_hours)
+    except asyncpg.ForeignKeyViolationError:
+        # A validly signed token whose subject has no user row.
+        raise AuthError(ErrorCode.UNAUTHENTICATED) from None
+    return key_id
+
+
+async def _insert_key(
+    conn: asyncpg.Connection,
+    user_id: UUID,
+    key: str,
+    scope: str,
+    fingerprint: str,
+    retention_hours: int,
+) -> UUID | None:
     key_id: UUID | None = await conn.fetchval(
         """
         INSERT INTO idempotency_keys (id, user_id, key, scope, request_fingerprint, state,

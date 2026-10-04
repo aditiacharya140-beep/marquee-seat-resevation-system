@@ -74,7 +74,9 @@ async def test_the_backstop_rejects_a_second_active_claim(db: None) -> None:
             await conn.execute(claim, reservations[1], seat_id)
 
         # A released claim no longer blocks the next one.
-        await conn.execute("UPDATE reservation_seats SET released_at = now()")
+        await conn.execute(
+            "UPDATE reservation_seats SET released_at = now() WHERE seat_id = $1", seat_id
+        )
         await conn.execute(claim, reservations[1], seat_id)
 
 

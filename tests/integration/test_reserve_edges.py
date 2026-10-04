@@ -11,8 +11,11 @@ import asyncpg
 import httpx
 import pytest
 
+from app.core import security
 from app.core.config import settings
+from app.core.constants import Role
 from app.db.session import acquire
+from app.domain.models import User
 from app.repositories import idempotency_repo
 from app.services.reservation_service import _fingerprint
 from tests.conftest import error_code, reserve
@@ -196,3 +199,64 @@ async def test_an_owner_whose_key_was_taken_over_cannot_also_reserve(
         # The old owner's cleanup must not delete the new owner's key either.
         await idempotency_repo.release(conn, record.id)
         assert await idempotency_repo.get(conn, UUID(user_id), "contested", 0) is not None
+
+
+async def test_a_lock_timeout_on_confirm_or_cancel_is_a_409_never_a_500(
+    client: httpx.AsyncClient, new_show: Callable[..., Any], new_guest: Callable[[], Any]
+) -> None:
+    show = await new_show(["A1"])
+    _, headers = await new_guest()
+    held = (await reserve(client, show["show_id"], headers, ["A1"], hold_ttl_seconds=60)).json()
+    base = f"/reservations/{held['reservation_id']}"
+    blocker = await asyncpg.connect(settings.database_url)
+    try:
+        lock = blocker.transaction()
+        await lock.start()
+        await blocker.execute(
+            "SELECT 1 FROM reservations WHERE id = $1 FOR UPDATE", UUID(held["reservation_id"])
+        )
+
+        blocked = await asyncio.gather(
+            client.post(f"{base}/cancel", headers=headers),
+            client.post(f"{base}/confirm", headers=headers),
+        )
+
+        await lock.rollback()
+    finally:
+        await blocker.close()
+
+    for response in blocked:
+        assert (response.status_code, error_code(response)) == (409, "SEAT_TAKEN")
+    # Nothing was half-applied: the hold is intact and still confirmable.
+    assert (await client.post(f"{base}/confirm", headers=headers)).status_code == 200
+
+
+async def test_text_the_database_cannot_store_is_a_422(
+    client: httpx.AsyncClient, new_show: Callable[..., Any], new_guest: Callable[[], Any]
+) -> None:
+    show = await new_show(["A1"])
+    _, headers = await new_guest()
+    url = f"/shows/{show['show_id']}/reserve"
+
+    nul_in_label = await reserve(client, show["show_id"], headers, ["A\x001"])
+    nul_in_body_key = await client.post(
+        url, headers=headers, json={"seats": ["A1"], "idempotency_key": "k\x00x"}
+    )
+    nul_in_email = await client.post(
+        "/auth/register", json={"email": "a\x00b@example.com", "password": "correct-horse-1"}
+    )
+
+    for response in (nul_in_label, nul_in_body_key, nul_in_email):
+        assert (response.status_code, error_code(response)) == (422, "VALIDATION_ERROR")
+
+
+async def test_a_signed_token_for_a_user_that_does_not_exist_is_a_401(
+    client: httpx.AsyncClient, new_show: Callable[..., Any]
+) -> None:
+    show = await new_show(["A1"])
+    ghost = User(id=uuid4(), email=None, role=Role.USER, is_guest=True, password_hash=None)
+    token, _ = security.issue_access_token(ghost)
+
+    response = await reserve(client, show["show_id"], {"Authorization": f"Bearer {token}"}, ["A1"])
+
+    assert (response.status_code, error_code(response)) == (401, "UNAUTHENTICATED")

@@ -7,7 +7,7 @@ import asyncpg
 
 from app.core.config import settings
 from app.core.error_codes import ErrorCode
-from app.core.errors import DependencyError
+from app.core.errors import DependencyError, ValidationError
 from app.db.engine import database
 
 #: What "the database is not there" looks like from the driver. A statement timeout is
@@ -33,6 +33,10 @@ async def acquire(wait_seconds: float | None = None) -> AsyncIterator[asyncpg.Co
             yield connection
     except _UNAVAILABLE as exc:
         raise DependencyError(ErrorCode.DATABASE_UNAVAILABLE) from exc
+    except asyncpg.DataError:
+        # A value the database cannot represent that a schema let through. The schemas
+        # are the real guard; this keeps a miss a 422 instead of a 500.
+        raise ValidationError(ErrorCode.VALIDATION_ERROR) from None
 
 
 @asynccontextmanager

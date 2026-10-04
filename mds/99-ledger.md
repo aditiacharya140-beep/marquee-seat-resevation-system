@@ -868,3 +868,43 @@ Stale-key recovery was tested first with `IDEMPOTENCY_STALE_SECONDS=0` as a shor
 
 **Implication** The guard on a recovery path has to hold when the premise "the owner is dead" is false. Test recovery paths with the owner alive.
 
+## LEARN-017 — Adversarial review of the claim path: what broke and what did not
+
+**Date** 2026-10-04
+
+One `grill` round over the reserve, confirm, cancel and idempotency code, executing probes against PostgreSQL rather than arguing.
+
+**Could not break** No double-sell across ~6,400 randomized reserve attempts with one-second holds, confirms and cancels timed at the expiry boundary; hot seat with 2,500 principals gave exactly one 201; 400 parallel requests from one principal against a limit of 4 gave exactly 4; 600 concurrent requests on one key gave one reservation; ~5,700 mid-churn samples of the reconciliation invariant all held; no deadlock surfaced.
+
+**Broke, all fixed with a test each**
+- A lock timeout on confirm or cancel returned 500: only the claim statements were wrapped by the contention translation. It now wraps every statement on those paths that can wait on a row lock.
+- A NUL character in a seat label or idempotency key returned 500. Text fields now reject control characters, and `asyncpg.DataError` is a 422 at the session boundary as a backstop.
+- A validly signed token whose subject has no user row returned 500, because the foreign key fires at the key insert, before the place that translated it.
+- A test in this suite ran `UPDATE reservation_seats SET released_at = now()` with no `WHERE`, releasing every claim row in the test database and disarming the backstop for anything running beside it. Scoped to its own seat.
+
+**Implication** "Nothing on this path may return 5xx" was true of the statements that were examined and false of their neighbours. The rule is per statement that can wait or reject, not per path.
+
+## RISK-014 — The per-user limit is per principal, and principals are free
+
+**Trigger** A client mints guests in a loop: `POST /auth/guest` is unauthenticated and unthrottled (rate limiting is not built, ADR-032), and a reserve confirms with no payment step.
+
+**Impact** One client can take N × `per_user_limit` seats. The lock-and-count mechanism is sound; what it counts is not a person. A client re-holding with a one-second TTL can likewise squat inventory.
+
+**Mitigation** None in the service. REQ-047's per-IP ceiling on guest issuance is the designed control and is the first thing to build next.
+
+## RISK-015 — A failed key release blocks that key for the staleness window
+
+**Trigger** T2 fails on a saturated pool, and the release that follows cannot get a connection either.
+
+**Impact** Retries with that key answer 409 `IDEMPOTENCY_IN_PROGRESS` for up to `IDEMPOTENCY_STALE_SECONDS` (30s). Waiters poll every 50ms, adding pool round trips exactly when the pool is short. No incorrect reservation results.
+
+**Mitigation** Accepted. A waiter backoff is the improvement.
+
+## RISK-016 — A hold's expiry is measured from transaction start
+
+**Trigger** A claim asking for a very short hold waits on a lock for longer than that hold.
+
+**Impact** `now()` is the transaction's start (LEARN-007, which the expiry argument depends on), so the hold can be committed already lapsed: the client receives 201 `held` for a seat others can claim at once. No double-sell. Separately, a confirm that loses its seat to a superseding claim at the boundary answers 409 `SEAT_TAKEN` where `RESERVATION_EXPIRED` would be more accurate.
+
+**Mitigation** Accepted. A minimum hold TTL above `DB_LOCK_TIMEOUT_MS` would close the first.
+

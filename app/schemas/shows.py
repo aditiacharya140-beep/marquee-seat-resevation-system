@@ -14,13 +14,16 @@ from pydantic import (
 )
 
 from app.core.config import settings
-from app.core.constants import CURRENCY_PATTERN, SeatStatus, ShowStatus
+from app.core.constants import CURRENCY_PATTERN, PRINTABLE_PATTERN, SeatStatus, ShowStatus
 from app.domain.models import Page, Show, ShowDetail
 
 SeatLabel = Annotated[
     str,
     StringConstraints(
-        strip_whitespace=True, min_length=1, max_length=settings.max_seat_label_length
+        strip_whitespace=True,
+        min_length=1,
+        max_length=settings.max_seat_label_length,
+        pattern=PRINTABLE_PATTERN,
     ),
 ]
 
@@ -36,7 +39,9 @@ class SeatOverride(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     price_paise: StrictInt | None = Field(default=None, ge=0)
-    section: str | None = Field(default=None, min_length=1, max_length=50)
+    section: str | None = Field(
+        default=None, min_length=1, max_length=50, pattern=PRINTABLE_PATTERN
+    )
 
 
 class ShowCreate(BaseModel):
@@ -44,10 +49,10 @@ class ShowCreate(BaseModel):
     # instead of silently producing a show sold at the wrong price (ADR-028).
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=200, pattern=PRINTABLE_PATTERN)
     seats: list[SeatLabel] = Field(min_length=1, max_length=settings.max_seats_per_show)
     price_paise: StrictInt = Field(ge=0)
-    event_kind: str | None = None
+    event_kind: str | None = Field(default=None, pattern=PRINTABLE_PATTERN)
     currency: str | None = Field(default=None, pattern=CURRENCY_PATTERN)
     per_user_limit: StrictInt | None = Field(default=None, gt=0)
     hold_ttl_seconds: StrictInt | None = Field(default=None, gt=0, le=settings.max_hold_ttl_seconds)
