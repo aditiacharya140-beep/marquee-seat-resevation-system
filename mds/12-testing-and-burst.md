@@ -68,7 +68,7 @@ One round, by a separate reviewing agent executing probes against PostgreSQL (LE
 | Phase | What it does |
 |---|---|
 | Warm | Polls `/readyz` until ready, so a cold start is never measured as load |
-| Setup | Logs in as admin, creates a fresh show, mints one guest per buyer — waiting as `Retry-After` instructs if guest creation is throttled |
+| Setup | Logs in as admin, creates a fresh show, mints one guest per buyer, or with `--accounts` registers one account per buyer (ADR-037) — waiting as `Retry-After` instructs if that is throttled, and stopping if it would take longer than an access token lives |
 | Stampede | Every buyer reserves one or two random seats, while a sampler polls the invariant |
 | Hot seat | A barrier-released crowd on one seat. No connection is held while waiting on the barrier |
 | Idempotent retries | One key fired twenty times at once |

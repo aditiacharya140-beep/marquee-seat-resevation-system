@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bash, not zsh: zsh does not word-split unquoted variables (LEARN-004).
 #
-#   ./burst.sh <BASE_URL> [--users N] [--seats N] [--hot N] [--concurrency N]
+#   ./burst.sh <BASE_URL> [--users N] [--seats N] [--hot N] [--concurrency N] [--accounts]
 #
 # The burst creates its own show, so it needs the admin credentials: ADMIN_EMAIL and
 # ADMIN_PASSWORD from the environment, falling back to ./.env for a local target.

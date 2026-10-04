@@ -54,6 +54,12 @@ Guest creation is rate limited per address, and the burst mints one guest per bu
 If it needs more than the bucket holds it says so and waits as `Retry-After`
 instructs — it has not hung.
 
+`--accounts` registers an account per buyer instead, which is how the web page's
+visitors book. Registration shares the `auth` limit with login — ten a minute per
+address by default — so at that setting it suits a few dozen buyers, not the default
+552: the burst stops with a message if registering would outlast the 15-minute access
+token. A full-size run needs a deeper `RATE_LIMIT_AUTH` bucket on the target.
+
 ## Quickstart
 
 ```bash
@@ -95,7 +101,8 @@ curl -s $BASE/metrics | grep -E 'reservations_|seats_available'
 Interactive docs at `/docs`.
 
 Each burst leaves its show behind, and the API cannot delete one. To remove them and
-everything booked on them, straight from the database (asks before deleting):
+everything booked on them, along with the accounts `--accounts` registered, straight
+from the database (asks before deleting):
 
 ```bash
 .venv/bin/python scripts/delete_burst_shows.py "<DATABASE_URL>"   # omit for the local ./.env one

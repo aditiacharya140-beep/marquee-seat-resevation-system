@@ -5,9 +5,13 @@
 Creates its own show, so every count it checks is exact rather than approximate.
 Exits non-zero if any invariant is violated.
 
-Phases: warm /readyz -> create show -> mint guests -> stampede (random seats, with
+Phases: warm /readyz -> create show -> mint buyers -> stampede (random seats, with
 reconciliation sampled mid-flight) -> hot-seat storm (barrier-released, one seat) ->
 idempotent retries (one key, fired concurrently) -> limit probe -> reconcile.
+
+A buyer is a guest by default. `--accounts` registers an account per buyer instead,
+which is how the web page's visitors book (ADR-037); see `mint_buyers` for what that
+costs against the `auth` rate limit.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ import asyncio
 import os
 import random
 import re
+import secrets
 import statistics
 import sys
 import time
@@ -32,6 +37,10 @@ IDEM_SEATS = ["IDEM1", "IDEM2"]
 LIMIT_PROBE_ATTEMPTS = PER_USER_LIMIT + 6
 IDEMPOTENT_DUPLICATES = 20
 WARM_TIMEOUT_SECONDS = 120
+#: Registration is throttled far harder than guest issuance, and an account's access
+#: token is short-lived. Past this share of its lifetime the first buyers' tokens would
+#: lapse mid-burst and their 401s would read as lost requests.
+TOKEN_LIFETIME_BUDGET = 0.8
 
 
 @dataclass
@@ -149,25 +158,51 @@ async def create_show(run: Run, general: list[str], probe: list[str]) -> None:
     run.show_id = created.json()["show_id"]
 
 
-async def mint_guests(run: Run, count: int) -> list[str]:
-    waited = False
+async def mint_buyers(run: Run, count: int, accounts: bool) -> list[str]:
+    """One principal per buyer: a guest, or with `accounts` a registered account.
 
-    async def one() -> str:
+    Both are limited per client address — guests by the `guest` class, registration by
+    `auth`, which it shares with login and which is far tighter because it is the
+    brute-force surface. A well-behaved client waits as `Retry-After` instructs.
+    """
+    kind = "registration" if accounts else "guest issuance"
+    tag = uuid.uuid4().hex[:8]
+    lifetimes: list[int] = []
+    waited = False
+    started = time.monotonic()
+
+    async def one(index: int) -> str:
         nonlocal waited
+        credentials = {
+            "email": f"burst-{tag}-{index}@example.com",
+            "password": secrets.token_urlsafe(24),
+        }
         while True:
             async with run.limiter:
-                response = await run.client.post("/auth/guest")
+                response = await (
+                    run.client.post("/auth/register", json=credentials)
+                    if accounts
+                    else run.client.post("/auth/guest")
+                )
             if response.status_code != 429:
                 response.raise_for_status()
+                lifetimes.append(int(response.json()["expires_in"]))
                 return str(response.json()["access_token"])
-            # Guest issuance is limited per address, which is the control that stops
-            # one client minting principals without bound. A well-behaved client waits.
             if not waited:
                 waited = True
-                print(f"guest issuance is rate limited; waiting as instructed ({count} to mint)")
+                print(f"{kind} is rate limited; waiting as instructed ({count} to mint)")
             await asyncio.sleep(float(response.headers.get("Retry-After", "1")))
 
-    return list(await asyncio.gather(*(one() for _ in range(count))))
+    tokens = list(await asyncio.gather(*(one(index) for index in range(count))))
+    elapsed = time.monotonic() - started
+    if elapsed > min(lifetimes) * TOKEN_LIFETIME_BUDGET:
+        sys.exit(
+            f"{kind} took {elapsed:.0f}s for {count} buyers, but an access token lives "
+            f"{min(lifetimes)}s: the first buyers' tokens would lapse mid-burst. Use fewer "
+            "--users and --hot, or give the deployment a deeper bucket "
+            f"(RATE_LIMIT_{'AUTH' if accounts else 'GUEST'})."
+        )
+    return tokens
 
 
 async def stampede(run: Run, tokens: list[str], general: list[str], rng: random.Random) -> None:
@@ -289,7 +324,7 @@ async def main(args: argparse.Namespace) -> int:
         await warm(run)
         await create_show(run, general, probe)
         faults_before = await run.metric("unhandled_exceptions_total")
-        tokens = await mint_guests(run, args.users + args.hot + 2)
+        tokens = await mint_buyers(run, args.users + args.hot + 2, args.accounts)
         buyers, rest = tokens[: args.users], tokens[args.users :]
         print(
             f"show {run.show_id}: {total} seats, {len(buyers)} buyers, {args.hot} on the hot seat\n"
@@ -318,6 +353,11 @@ if __name__ == "__main__":
     parser.add_argument("--seats", type=int, default=200, help="general seats in the show")
     parser.add_argument("--hot", type=int, default=150, help="contenders for the one hot seat")
     parser.add_argument("--concurrency", type=int, default=200, help="requests in flight at once")
+    parser.add_argument(
+        "--accounts",
+        action="store_true",
+        help="register an account per buyer instead of minting guests",
+    )
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--seed", type=int, default=7)
     sys.exit(asyncio.run(main(parser.parse_args())))
