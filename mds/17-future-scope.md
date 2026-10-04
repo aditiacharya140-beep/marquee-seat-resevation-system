@@ -22,11 +22,10 @@ Both exist (ADR-042). Still owed:
 - **Aggregates off the request pool.** The console's queries borrow a pooled connection. They are bounded by window and row limit, but under a burst they compete with bookings for the pool; a second small pool or the writer's connection would isolate them.
 - **A durable log view.** The console shows this process's last `LOG_BUFFER_MAX` lines from memory, which a restart empties. Shipping logs to a store is the real answer.
 - **An unpublished admin.** The demo's admin sign-in is in the README by decision (ADR-041). A real deployment needs the opposite, and admin actions audited under `/admin` rather than exempted.
-- **Browser coverage.** The console has been exercised through its API and one local run, not across browsers.
+- **Browser coverage.** The console and the booking page's cancel were checked in one browser (headless Chrome), not across browsers.
+- **A screen recording of the logs under load**, which the brief offers as an alternative to log access. The console's Logs tab is the access; no recording was made.
 
-## 3. (merged into item 2)
-
-## 4. Metrics that are specified but not exposed
+## 3. Metrics that are specified but not exposed
 
 | Metric | What it would show |
 |---|---|
@@ -38,28 +37,28 @@ Both exist (ADR-042). Still owed:
 
 REQ-042 names the latency histogram, `db_pool_waiting` and the lock-wait histogram, so that requirement is only partly met. Each of the two pool/lock series is the early warning for an alert that today can only fire after the fact.
 
-## 5. One log line for an unhandled exception
+## 4. One log line for an unhandled exception
 
 Starlette's `ServerErrorMiddleware` re-raises after the 500 handler has answered, so the ASGI server logs the trace a second time, outside the request context and so without the request id (LEARN-010). The designed fix is an exception-boundary middleware immediately inside `RequestContextMiddleware` that catches, logs once and answers, so nothing reaches `ServerErrorMiddleware` (ADR-024). The envelope half of the same ticket (SEAT-066) is built; this half is not.
 
-## 6. Show lifecycle
+## 5. Show lifecycle
 
 - **Taking a show off sale.** `shows.status` has `draft`, `on_sale` and `closed`, and a reserve against anything but `on_sale` declines 409 `SHOW_NOT_ON_SALE` — but every show is created `on_sale` and no endpoint changes it. An admin can **delete** a show (ADR-043), which is the blunt version: it removes the bookings too. Closing a show while keeping its bookings, and anything resembling a refund, are not built.
 - **Sale windows.** `shows.sales_open_at` and `sales_close_at` exist as columns and are never read.
 - **Admin override** on another principal's reservation: no route exists, by design, until one is asked for.
 
-## 7. Idempotency housekeeping
+## 6. Idempotency housekeeping
 
 - **Retention purge.** Keys carry `expires_at` and `ix_idem_expiry` exists, but nothing deletes expired keys. The statement is in the runbook of [13-deployment.md](13-deployment.md); a `purge_expired` repository method and something to schedule it are not written (RISK-007).
 - **Waiter backoff.** A duplicate waiting on an in-progress key polls at a fixed interval; under pool pressure that adds load when the pool is shortest (RISK-015).
 - **Serialization-failure retry.** `40001` is specified as "retry once in-request, then 409". Nothing runs above `READ COMMITTED`, so it cannot currently occur, and no retry is written.
 
-## 8. Auth hardening
+## 7. Auth hardening
 
 - **Refresh-token revocation.** Refresh is stateless; a `jti` denylist is what "log out everywhere" or "this token was stolen" would need.
 - **Argon2 parameters from configuration.** The library defaults are used; only the minimum password length and the hashing pool width are settings.
 
-## 9. Tests that are owed
+## 8. Tests that are owed
 
 | Test | What it would prove |
 |---|---|
@@ -72,13 +71,15 @@ Starlette's `ServerErrorMiddleware` re-raises after the 500 handler has answered
 | The four LEARN-002 probes | "Loser blocks then re-evaluates" and "winner rolls back, blocked claimer wins" as direct two-connection tests; the other two are covered |
 | CI | The workflow has never run on a real runner: GitHub Actions is not enabled for the repository |
 
-## 10. Burst script
+## 9. Burst script
 
 Built: warm-up, own show, stampede with reconciliation sampled mid-flight, barrier-released hot seat, one key fired concurrently, limit probe, reconciliation against the API, the 201 bodies and `/metrics`, non-zero exit on violation.
 
-Also built: a spoofed-identity check and a cancel-and-re-book check. Not built: a hold-then-confirm phase, the same key with a mutated body, more than one hot seat, the per-phase table, a self-test that injects each violation and asserts the non-zero exit, `make burst`, and a run at the scale the design is sized for — the largest live run is the script's default, 400 buyers and 150 on one seat.
+Also built: a spoofed-identity check, a cancel-and-re-book check, an accounts mode, and `make burst URL=…`. Not built: a hold-then-confirm phase, the same key with a mutated body, more than one hot seat, the per-phase table, and a self-test that injects each violation and asserts the non-zero exit. The brief's scale has been run locally; the largest live run is the script's default, 400 buyers and 150 on one seat, which is what the free instance can serve.
 
-## 11. Operating at scale
+## 10. Operating at scale
+
+- **More than one process.** One uvicorn worker serves everything; throughput on the free instance is about 19 bookings a second. Nothing in the claim path holds in-process state, so adding workers or instances is safe for correctness; what it changes is that counters, rate-limit buckets and the log view become per process.
 
 - **A connection pooler** in transaction mode is the step after the pool is exhausted; note that session-level startup parameters (how the guards are applied, LEARN-014) need care behind one.
 - **Exact, cross-instance rate limiting** needs a shared store; buckets are per process (RISK-003).
@@ -86,6 +87,6 @@ Also built: a spoofed-identity check and a cancel-and-re-book check. Not built: 
 - **A hash-pinned lockfile**; direct dependencies are pinned exactly, transitive ones are not (RISK-008).
 - **Sharding by show**, since shows are independent, is the step after the primary's write throughput.
 
-## 12. Out of scope by decision
+## 11. Out of scope by decision
 
 General admission (a capacity counter is a different mechanism with its own argument), read replicas, caching show state, multi-region writes, and a virtual waiting room. Reasons are in [11-scalability.md](11-scalability.md).

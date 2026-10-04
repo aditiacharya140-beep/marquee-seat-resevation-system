@@ -1,4 +1,4 @@
-# Write-up
+# Marquee — write-up
 
 ## The problem, and the one decision that solves it
 
@@ -174,43 +174,40 @@ fires whenever the product succeeds gets muted.
 
 ## Evidence
 
-- **328 tests, 96% line and branch coverage of `app/`**, all against real PostgreSQL
+- **329 tests, 96% line and branch coverage of `app/`**, all against real PostgreSQL
   with the real migration; nothing is mocked. They have only ever run on the
   development machine: GitHub Actions is not enabled for the repository.
-- `tests/concurrency/` — one test per invariant against real PostgreSQL: hot seat (60
-  contenders → one `201`, 59 × `409`, zero unhandled), per-user limit, one key fired
-  20× concurrently, opposite-order multi-seat claims, reconciliation sampled
-  mid-burst, lapsed-hold re-claim. Replacing the claim predicate with `true` fails
-  four of the six, so they are testing the mechanism and not the happy path.
+- `tests/concurrency/` — one test per invariant: hot seat (60 contenders → one `201`,
+  59 × `409`, zero unhandled), per-user limit, one key fired 20× concurrently,
+  opposite-order multi-seat claims, reconciliation sampled mid-burst, lapsed-hold
+  re-claim, and a show deleted in the middle of sixty reserves. Replacing the claim
+  predicate with `true` fails four of the first six, so they test the mechanism and
+  not the happy path. That check was run by hand, once.
 - One adversarial review round, run by a separate agent executing probes against
   PostgreSQL: it could not produce a double-sell, a deadlock, a limit breach or two
   reservations for one key across several thousand randomized attempts. It did find
   three inputs that returned a 500 where a 4xx was owed (a lock timeout on
   confirm/cancel, a NUL character, a token for a missing user); each is fixed with a
   test (LEARN-017).
-- **20,000 buyers locally**, one uvicorn worker, pool of 20, 5,000 requests in flight:
-  20,530 reserves in 95s — 2,975 created, 17,529 `SEAT_TAKEN`, hot seat 1 winner of
-  500, 3,901 seats sold and none twice, every reconciliation sample held, and no 5xx
-  and no error line from the service. One request was dropped by the client's own
-  connection. Latency at that depth was poor (p50 11s): one Python process.
-- Local burst, one uvicorn worker, pool of 20: 3,530 reserve requests in 9.6s with 500
-  in flight — 705 created, 2,800 `SEAT_TAKEN`, 19 replays, 6 `PER_USER_LIMIT`, **zero
-  5xx**, hot seat 1 winner of 500, every reconciliation check green. Latency at that
-  depth: p50 0.8s, p95 3.1s. That is 500 requests sharing 20 connections and one
-  Python process — requests wait rather than fail — and it was not tuned or profiled.
-- **Live burst** against the Render free instance, at the script's default size with
-  rate limiting on and correctly configured (`./burst.sh <URL> --concurrency 50`):
-  400 buyers on 213 seats plus 150 contenders for one hot seat — 580 reserve requests,
-  132 created, 423 `SEAT_TAKEN`, 19 replays, 6 `PER_USER_LIMIT`. Hot seat: 1 winner of
-  150. All 24 mid-flight reconciliation samples held, no seat was sold twice,
-  `/metrics` equalled the API, `unhandled_exceptions_total` did not move, zero 5xx and
-  zero dropped requests. Latency at 50 in flight: p50 2.2s, p95 7.1s — a fraction of
-  a shared CPU, and not tuned.
+- **The brief's scale, locally.** One process, pool of 20, 5,000 requests in flight:
+  20,531 reserves in 99s — 2,998 created, 17,508 `SEAT_TAKEN`, hot seat 1 winner of
+  500, 3,895 seats sold and none twice, every reconciliation sample held, **zero 5xx
+  and zero dropped requests**, 40,937 audit rows written and none dropped. Latency at
+  that depth was poor — half of requests over 11s — because it is one Python process.
+- **Live**, on the Render free instance (`./burst.sh <URL> --concurrency 50`): 400
+  buyers on 214 seats plus 150 contenders for one hot seat — 581 reserves in 31s, 133
+  created, 423 `SEAT_TAKEN`, 19 replays, 6 `PER_USER_LIMIT`; hot seat 1 winner of
+  150; all 23 mid-flight reconciliation samples held; a spoofed `user_id` ignored, a
+  non-owner's cancel refused, the owner's cancel followed by a re-booking; `/metrics`
+  equal to the API; `unhandled_exceptions_total` unmoved; zero 5xx and zero dropped
+  requests. The admin console showed the same 1,345 requests in the audit trail, with
+  none dropped. p50 2.1s, p95 6.5s: about 19 bookings a second.
   An earlier, smaller live run had one response in 310 that was not JSON. Every
-  correctness check passed on that run too and the service's fault counter did not
-  move, but the cause was never established: the script at the time discarded the
-  status code, and a redeploy was in progress. The script now records the status and
-  whether the service or the platform's proxy answered; it has not recurred.
+  correctness check passed on that run too, but the cause was never established: the
+  script at the time discarded the status code, and a redeploy was in progress. It
+  has not recurred.
+- **A clean clone** builds and runs with `docker compose up --build` and passes the
+  burst.
 
 ## Rate limiting, and the weakness it only narrows
 
@@ -264,9 +261,11 @@ Neither failure would have shown in a test suite or a passing burst.
 - **`/readyz`** runs a real query, fails closed, and reports whether rate limiting is
   on.
 
-One thing the audit trail showed at once: at the innermost layer a reserve takes about
-5 ms, while the same burst's clients saw hundreds. The time is spent queueing in front
-of the handler, in a single Python process — not in the database and not on row locks.
+What the audit trail showed at once, because it times each request at the innermost
+layer: locally a reserve takes about 5 ms there while the same burst's clients see
+hundreds — the wait is in front of the handler, in one Python process. On the free
+instance the same reserve takes about two seconds *inside* the handler at 50 in
+flight: a fraction of a CPU shared by every step. Neither is lock contention.
 
 ## How the live service is configured
 
@@ -278,9 +277,11 @@ and the differences matter to anyone testing it.
 | Rate limiting | **off** | on | A load test from one machine is never throttled. Nor is abuse: the per-user limit can be sidestepped by creating guests |
 | Access token lifetime | **1 hour** | 15 minutes, with refresh | A long test does not lose its tokens mid-run. After an hour a request answers `401 UNAUTHENTICATED` and the client must sign in again — or refresh, if it registered |
 | Guest token lifetime | 1 hour | 1 hour | A guest cannot refresh. The session ends |
+| The booking page | **requires an account to book** | the same | A decision about the page: a guest's ticket was lost with its tab. The API still accepts guest tokens, which is what a load test uses |
 | Admin credentials | **published in the README**, reset at every start | secret | Anyone can create or delete shows — deleting one removes every booking on it — and read the audit trail and logs. No secret is ever logged |
 | Instance | free: a fraction of a CPU, sleeps when idle | sized for the on-sale | About 19 bookings a second. A 20,000-request burst will be timed out by clients and by the platform's proxy long before the service has answered it |
-| Database pool | 20 | sized to the database | Requests beyond that wait for a connection rather than fail |
+| Database pool | 20, and a request waits up to 60s for a connection | sized to the database | Requests beyond the pool wait rather than fail. A 503 would be a 5xx; a wait is not |
+| Seats per show | up to 50,000 | whatever the venue is | A hall of N seats is accepted for any N a venue has |
 | Processes | 1 | several | Counters, rate-limit buckets and the log view are per process and reset on restart |
 
 The correctness properties do not depend on any of these. What does is throughput,
@@ -313,11 +314,16 @@ machine.
 ## What comes next
 
 1. Turn CI on. Until then nothing has been verified off one machine.
-2. Review auth, shows and the rate limiter the way the claim path was reviewed.
-3. Decide how a principal earns the right to reserve — the one weakness with a
-   product consequence.
-4. A burst far beyond the default size against the live URL.
-5. Audit, then the missing metrics.
+2. More than one process. The audit trail shows where the time goes on the free
+   instance: about two seconds inside each reserve at 50 in flight, on a fraction of
+   a CPU. Correctness does not depend on the process count; throughput does.
+3. Decide how a person earns the right to reserve — a payment or identity step. It
+   is the one weakness with a product consequence.
+4. Review auth, shows, the rate limiter and the admin endpoints the way the claim
+   path was reviewed.
+5. A latency histogram and pool gauges on `/metrics`, and a retention policy for the
+   audit trail and idempotency keys.
+6. Close a show without deleting its bookings; sale windows.
 
 ## AI usage
 
@@ -341,6 +347,24 @@ accepting them:
 - *"Never over-engineer"* cut an `events` table and seat-coordinate columns no
   requirement drove; *"we should not under-deliver"* stopped an external review's
   cuts from going too far.
+
+- *"This is alarming"*, on reading that free guest accounts made the seat limit
+  bypassable: rate limiting, cut for the deadline, was built that hour — and
+  *"should we remove guests completely?"* was answered no, after the reasoning:
+  registration is exactly as free, so removing guests closes nothing.
+- Pasting the brief back in and asking what was under-delivered found three things
+  the AI had not flagged: cancel refused the default, confirmed booking; rate limiting
+  would have turned a reviewer's burst into `429`s; and reviewers had no admin
+  sign-in. All three were the AI following its own design documents past the brief.
+- *"I don't see a cancel option"*, from using the page, found that the button had
+  not followed the service change.
+
+**Where the AI was wrong, specifically.** It followed its design documents over the
+handover note on cancel, and was wrong. It set a proxy-hop count that put every live
+user in one rate-limit bucket, then one that limited nobody; only testing the live
+service found either. It reported latency numbers that included its own script's
+queueing. It twice committed work across two concurrent sessions that then needed
+renumbering. Each is recorded where it was found.
 
 **Where it cost time.** A multi-agent workflow produced a rigorous design slowly, and
 the implementation was compressed into a final direct pass as a result. The design

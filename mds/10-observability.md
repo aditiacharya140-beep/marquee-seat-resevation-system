@@ -62,7 +62,7 @@ Counters are incremented inline in the service layer, so they are exact. The gau
 
 The cost is one grouped count per scrape. A scrape every few seconds over fifty shows is negligible beside a burst.
 
-Specified but not exposed — the HTTP latency histogram, pool gauges, the lock-wait histogram and the other three per-show seat gauges — are item 4 of [17-future-scope.md](17-future-scope.md).
+Specified but not exposed — the HTTP latency histogram, pool gauges, the lock-wait histogram and the other three per-show seat gauges — are item 3 of [17-future-scope.md](17-future-scope.md).
 
 ---
 

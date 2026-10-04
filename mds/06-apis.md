@@ -118,7 +118,7 @@ This is the one endpoint that **rejects** unknown body fields; see the conventio
 **201**
 ```json
 {
-  "show_id": "…", "name": "friday-night", "event_kind": "cinema",
+  "id": "…", "show_id": "…", "name": "friday-night", "event_kind": "cinema",
   "price_paise": 25000, "currency": "INR",
   "per_user_limit": 4, "hold_ttl_seconds": 120,
   "status": "on_sale", "total_seats": 3,
@@ -135,14 +135,14 @@ This is the one endpoint that **rejects** unknown body fields; see the conventio
 `422 VALIDATION_ERROR` — empty `seats`, duplicate labels, negative or non-integer `price_paise`, label over the configured length, seat count over the configured maximum, an override naming a label not in `seats`, an `event_kind` outside `ALLOWED_EVENT_KINDS`, or **any unknown field**.
 `403 FORBIDDEN` — non-admin.
 
-Show and all seats are created in one transaction. A validation failure creates nothing.
+Show and all seats are created in one transaction. A validation failure creates nothing. `id` and `show_id` are the same value: the original brief calls it `id`, a reservation calls it `show_id`. At most `MAX_SEATS_PER_SHOW` seats (50,000).
 
 ### `GET /shows/{show_id}`
 
 **200**
 ```json
 {
-  "show_id": "…", "name": "friday-night", "status": "on_sale",
+  "id": "…", "show_id": "…", "name": "friday-night", "status": "on_sale",
   "price_paise": 25000, "currency": "INR",
   "per_user_limit": 4, "hold_ttl_seconds": 120, "total_seats": 3,
   "counts": { "available": 1, "held": 1, "confirmed": 1, "total": 3 },

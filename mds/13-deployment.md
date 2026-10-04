@@ -121,6 +121,8 @@ Set in the dashboard, and differing from the defaults:
 | `RATE_LIMIT_GUEST` | `600/600s` | Only matters when limiting is on |
 | `DB_POOL_MAX` | `20` | |
 
+`render.yaml` and `docker-compose.yml` declare the same values, so a clean checkout runs the way the live service does (ADR-044). `DB_ACQUIRE_TIMEOUT_SECONDS` defaults to 60 and `MAX_SEATS_PER_SHOW` to 50,000.
+
 This is a demo configuration, not a production one: the limiter is off, tokens are long-lived, and the admin sign-in is public. `WRITEUP.md` sets the two side by side.
 
 **The proxy-hop count on Render is 3**, found by test rather than from documentation (LEARN-018, LEARN-019). At 1 the limiter resolved every client to one of the platform's internal `10.x` addresses, so all clients shared a bucket. At 2 it resolved to an address that changed with every request, so nothing was ever limited. At 3 a 429's `details.limited_by` names the caller's own public address, and a forged `X-Forwarded-For` does not change it.
