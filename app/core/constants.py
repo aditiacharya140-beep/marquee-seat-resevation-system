@@ -84,6 +84,24 @@ UNMATCHED_ROUTE_LABEL: Final = "unmatched"
 REDACTED: Final = "[redacted]"
 
 #: Keys whose values never reach a log line, whatever a future `extra=` passes.
+DSN_REDACTED: Final = "redacted"
+
 REDACTED_LOG_KEYS: Final = frozenset(
     {"password", "password_hash", "token", "authorization", "database_url", "jwt_secret"}
+)
+
+# Matched as substrings, against atoms rather than compound names: suffixing on
+# "jwt_secret" left "secret" and "client_secret" unguarded, and suffixing on "token" left
+# "tokens" unguarded. Over-redacting a benign field is the cheaper mistake.
+REDACTED_LOG_KEY_ATOMS: Final = (
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "authorization",
+    "credential",
+    "api_key",
+    "apikey",
+    "dsn",
+    "database_url",
 )

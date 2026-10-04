@@ -11,7 +11,7 @@ from urllib.parse import urlsplit, urlunsplit
 from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-from app.core.constants import REDACTED, LogLevel
+from app.core.constants import DSN_REDACTED, REDACTED, LogLevel
 
 #: The audit writer holds one connection outside the request pool
 #: (mds/10-observability.md), so the pool cannot have the whole server ceiling.
@@ -19,13 +19,26 @@ RESERVED_NON_POOL_CONNECTIONS: Final = 1
 
 
 def redact_dsn(dsn: str) -> str:
-    """Strip credentials from a connection string so it is safe to log."""
+    """Strip credentials from a connection string so it is safe to log.
+
+    Total by construction: a log helper that can raise turns a diagnostic into
+    an outage. An unparseable DSN redacts to the placeholder rather than
+    propagating ValueError into the startup path.
+    """
+    try:
+        parts = urlsplit(dsn)
+        _host, _port = parts.hostname, parts.port
+    except ValueError:
+        return REDACTED
     parts = urlsplit(dsn)
     if parts.hostname is None:
         return REDACTED
-    netloc = parts.hostname if parts.port is None else f"{parts.hostname}:{parts.port}"
+    host = f"[{parts.hostname}]" if ":" in (parts.hostname or "") else parts.hostname
+    netloc = host if parts.port is None else f"{host}:{parts.port}"
     if parts.username:
-        netloc = f"{parts.username}:{REDACTED}@{netloc}"
+        # Not REDACTED: its brackets would parse as an IPv6 literal in userinfo,
+        # making the logged DSN unparseable by urlsplit.
+        netloc = f"{parts.username}:{DSN_REDACTED}@{netloc}"
     return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
 
 
@@ -55,12 +68,12 @@ class Settings(BaseSettings):
     default_event_kind: str
     default_currency: str
 
-    jwt_secret: SecretStr = Field(validation_alias="JWT_SECRET")
+    jwt_secret: SecretStr = Field(validation_alias="JWT_SECRET", min_length=32)
     access_token_ttl_seconds: int = 900
     refresh_token_ttl_seconds: int = 604800
     guest_token_ttl_seconds: int = 3600
     admin_email: str = Field(validation_alias="ADMIN_EMAIL", min_length=1)
-    admin_password: SecretStr = Field(validation_alias="ADMIN_PASSWORD")
+    admin_password: SecretStr = Field(validation_alias="ADMIN_PASSWORD", min_length=12)
 
     default_per_user_limit: int = 4
     default_hold_ttl_seconds: int = 120
@@ -131,6 +144,32 @@ class Settings(BaseSettings):
                 "the queue ahead of it was still about to drain"
             )
 
+        dsns = (("DATABASE_URL", self.database_url), ("TEST_DATABASE_URL", self.test_database_url))
+        for name, dsn in dsns:
+            if dsn is None:
+                continue
+            try:
+                _ = urlsplit(dsn).port
+            except ValueError as exc:
+                raise ValueError(
+                    f"{name} is not a parseable connection string ({exc}): percent-encode "
+                    "any '/', '[' or ':' in the password"
+                ) from None
+
+        if self.default_hold_ttl_seconds > self.max_hold_ttl_seconds:
+            raise ValueError(
+                f"DEFAULT_HOLD_TTL_SECONDS ({self.default_hold_ttl_seconds}) exceeds "
+                f"MAX_HOLD_TTL_SECONDS ({self.max_hold_ttl_seconds}): every hold taken at the "
+                "default would breach the clamp it is validated against, and the guest-token "
+                "check below would pass while never actually holding"
+            )
+
+        if self.db_pool_min > self.db_pool_max:
+            raise ValueError(
+                f"DB_POOL_MIN ({self.db_pool_min}) exceeds DB_POOL_MAX ({self.db_pool_max}): "
+                "the pool would be rejected at creation, naming neither variable"
+            )
+
         margin_floor = self.db_lock_timeout_ms + self.db_timeout_margin_ms
         if self.db_statement_timeout_ms < margin_floor:
             raise ValueError(
@@ -157,6 +196,8 @@ class Settings(BaseSettings):
                 summary[name] = REDACTED
             elif name.endswith("database_url") and isinstance(value, str):
                 summary[name] = redact_dsn(value)
+            elif isinstance(value, frozenset):
+                summary[name] = sorted(value)
             else:
                 summary[name] = value
         return summary

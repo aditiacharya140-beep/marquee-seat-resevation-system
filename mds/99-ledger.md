@@ -731,3 +731,75 @@ Sub-statements inside one `WITH` clause execute with the **same snapshot** and c
 Registering an exception handler for `Exception` in Starlette does not install a normal handler. The handler is passed to `ServerErrorMiddleware`, which uses it to build the response and then re-raises the exception so the ASGI server logs it. `ServerErrorMiddleware` is installed outside every user middleware, so the re-raise is logged after `RequestContextMiddleware` has reset the request-id ContextVar — producing a second JSON line for the same fault with no correlation id.
 
 **Implication** A catch-all registered as an exception handler cannot be the only catch-all if "every log line carries `request_id`" is to hold. ADR-024 moves the boundary into a middleware placed immediately inside the request context, which catches, logs once with the id and a stack, and returns the envelope so nothing escapes to be re-raised. Any framework upgrade should re-check this behaviour, and any test asserting the 500 envelope must disable the test client's own exception re-raising.
+
+## LEARN-011 — `COPY --chmod` needs BuildKit, which the local daemon does not use
+
+**Date** 2026-10-04 · **Found by** backend-dev during SEAT-005
+
+Colima's Docker daemon uses the legacy builder, which rejects `COPY --chmod`:
+
+```
+the --chmod option requires BuildKit
+```
+
+**Implication** The Dockerfile uses `COPY` followed by `RUN chmod 0755`, which builds on both the legacy builder and BuildKit. Any Dockerfile change in this repository must build on the legacy builder, because that is what the development machine has — a `--chmod`, `--link` or heredoc that only works under BuildKit will pass in CI and fail locally, which is the worse direction for that failure to point.
+
+## RISK-008 — Transitive dependencies are not hash-pinned
+
+**Trigger** A transitive dependency publishes a release incompatible with the pinned direct set.
+
+**Impact** `mds/13-deployment.md` specifies "Lockfile, hash-pinned". All 12 direct dependencies in `pyproject.toml` are `==`-pinned, but the 19 transitive ones (`anyio`, `starlette`, `cffi`, `watchfiles`, …) resolve fresh at build time. Two consecutive builds were verified to resolve identically, which demonstrates determinism **today**, not reproducibility next month. A clean checkout months from now could fail to build or build differently — and REQ-050 is exactly the requirement that a clean checkout builds.
+
+**Mitigation** Accepted for now rather than fixed: the direct pins bound the blast radius, and a hash-pinned lockfile duplicates the dependency list into a second file that must be kept coherent. Recorded rather than silently tolerated. If a build ever resolves differently, generate a hash-pinned lock and make the install `--require-hashes`; that is the fix and it is well understood. Revisit during Stage 7 hardening, where build reproducibility is already in scope.
+
+**Note** This is the one SEAT-005 acceptance check that is not honestly satisfiable as written. The ticket's `Done when` should read "direct dependencies are exactly pinned" with this risk referenced, rather than claiming a lockfile that does not exist.
+
+---
+
+## Stage 0 review outcome (SEAT-007)
+
+**Date** 2026-10-04
+
+Three blockers, nine high, twelve medium. Fixed in this stage: the build-system defect (B1), the DSN crash-loop (B2), empty-secret boot (B3), redaction bypassed by key shape and by free text (H5, H6), two missing relationship checks (H8), the `.env.example` parity test (H9), and three tests that passed against broken implementations (M1, M2, M9).
+
+Eleven categories were attacked and found clean, including secrets in the image (verified on the built artifact with `docker save | strings`), cold-cache build, hardcoded tunables, duplicated error codes, ContextVar leakage, handler leakage and layering.
+
+## RISK-009 — Redaction does not reach arbitrary object types
+
+**Trigger** A log call passes a dataclass, a Pydantic model, a `set`, or any non-`dict`/`list` object in `extra=`.
+
+**Impact** `_redact` recurses only into dicts and lists. `orjson` serialises dataclasses natively and `default=str` stringifies everything else, so a field named `password` inside a dataclass reaches the log line without passing the key filter. Stage 2's principal and credential DTOs are exactly this shape.
+
+**Mitigation** The key filter now matches atoms as substrings, which covers dict-shaped payloads. Normalising dataclasses and models (`dataclasses.asdict`, `model_dump`) before filtering is the fix and is owed before Stage 2 introduces those DTOs. Free-text credentials in `message` and `stack` are scrubbed by pattern; an arbitrary secret pasted into an exception message is not pattern-matchable and is covered by the convention not to put one there.
+
+## RISK-010 — Log writes are synchronous on the event loop
+
+**Trigger** The container's stdout consumer stops draining — log-shipper backpressure, disk pressure on the node.
+
+**Impact** `StreamHandler(sys.stdout)` with `PYTHONUNBUFFERED=1` means one unbuffered `write(2)` per record on the event-loop thread. Demonstrated: once a 64 KB pipe buffer fills, the process produces no output and an `asyncio.wait_for` timer never fires, because the blocking write prevents the loop from reaching the timer callback. Every in-flight claim stalls, the healthcheck times out, the platform restarts mid-burst, and `unhandled_exceptions_total` stays at zero through the outage.
+
+**Mitigation** Owed before Stage 7's burst work: route records through `QueueHandler` + `QueueListener` on a worker thread with a bounded queue and a drop policy — the same shape as the audit write path, and for the same reason.
+
+## RISK-011 — `alembic.ini` can never exist in the image
+
+**Trigger** SEAT-008 adds `alembic.ini` at the repository root.
+
+**Impact** The runtime stage copies `app/` only, so the entrypoint's `[ -f alembic.ini ]` guard stays false in the image forever while being true on every developer machine. `alembic upgrade head` would silently never run in the container, with a `migrations_skipped` warning as the only signal — reopening RISK-005 by accident.
+
+**Mitigation** SEAT-008 must either `COPY alembic.ini ./` or invert the guard to an explicit `SKIP_MIGRATIONS` flag so the default is to fail loudly. Recorded now because the failure is invisible at the moment it is introduced.
+
+## RISK-012 — The log schema has a second implementation in bash
+
+**Trigger** `entrypoint.sh` emits a hand-rolled JSON line before Python starts.
+
+**Impact** It carries four of the six mandated fields and second-rather-than-microsecond precision, so it already violates the schema every Python line is tested against. A contract defined in two places that have diverged.
+
+**Mitigation** Accepted while the only such line is `migrations_skipped`. If the entrypoint ever needs a second line, it emits through Python instead.
+
+## LEARN-012 — A mutation-covered suite can still contain vacuous assertions
+
+**Date** 2026-10-04
+
+The Stage 0 suite was validated against 14 deliberate mutations, every one of which killed tests — and it still contained three assertions that proved nothing: a loop that iterated zero times because the formatter had already neutralised the values it scanned for, a test whose name promised stack redaction while its body raised an exception containing no secret, and no test at all coupling `.env.example` to `Settings` (two fields were deleted and the suite stayed green).
+
+**Implication** Mutation coverage proves the mutations were caught, not that every assertion has teeth. The gap is assertions whose *premise* is false — they never execute, or they assert something adjacent to the property named. Two checks worth running on any suite that matters: confirm each assertion actually executes (a loop over a filtered collection can be empty), and confirm the test's name matches what its body asserts. Both found defects here that mutation testing structurally could not.

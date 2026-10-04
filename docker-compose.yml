@@ -1,0 +1,48 @@
+# One command to a working local stack: `docker compose up`.
+#
+# The four required secrets are supplied here with dev-only values. load_settings()
+# declares DATABASE_URL, JWT_SECRET, ADMIN_EMAIL and ADMIN_PASSWORD required with no
+# default, plus the three ADR-025 vertical settings, so the service refuses to boot
+# without all seven. Everything else takes its documented default from core/config.py.
+
+name: seatres
+
+services:
+  db:
+    image: postgres:16.15
+    environment:
+      POSTGRES_USER: seatres
+      POSTGRES_PASSWORD: seatres
+      POSTGRES_DB: seatres
+    # 5432 on this host is the local Homebrew Postgres the non-Docker path uses.
+    # Publishing the container's on 55432 keeps both reachable at the same time.
+    ports:
+      - "55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U seatres -d seatres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://seatres:seatres@db:5432/seatres
+      JWT_SECRET: dev-only-change-me
+      ADMIN_EMAIL: admin@example.com
+      ADMIN_PASSWORD: dev-only-change-me
+      ALLOWED_EVENT_KINDS: cinema,concert
+      DEFAULT_EVENT_KIND: cinema
+      DEFAULT_CURRENCY: INR
+    # Container side is the image's PORT default; 8080 on the host leaves 8000 free
+    # for `make run`.
+    ports:
+      - "8080:8000"
+
+volumes:
+  pgdata:

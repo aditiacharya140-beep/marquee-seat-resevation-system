@@ -106,7 +106,7 @@ Done when:
   - `docker compose up` brings up Postgres 16 and the service with no manual step; `GET /healthz` on the mapped port returns 200.
   - `.dockerignore` excludes `tests/`, `burst/`, `.git`, and local env files; `docker run --rm <image> ls` shows none of them present.
   - CI runs lint, types, and unit tests, then builds the image and asserts `/healthz` 200 from the built image, all from a fresh clone with no cached state.
-  - The dependency set is lockfile-pinned; two consecutive builds resolve identical versions.
+  - The dependency set is exactly pinned for every direct dependency (transitives are RISK-008, not hash-pinned); two consecutive builds resolve identical versions.
 Test:         CI job `container-smoke` (the `REQ-050` check named in `12-testing-and-burst.md`)
 
 ### SEAT-006 — Foundation integration tests

@@ -221,4 +221,4 @@ VERDICT: PASS
 
 ## CI
 
-On every push: lint, type check, unit, integration against a Postgres service container, concurrency suite at reduced scale, container build, and a smoke run of the built image from a clean checkout proving `/readyz` becomes ready. The full-scale burst runs against the deployed URL manually and before each release, because it is slow and needs the live target.
+On every push: lint, type check, unit, integration against a Postgres service container, concurrency suite at reduced scale, container build, and a smoke run of the built image from a clean checkout proving `/healthz` answers 200 (and `/readyz` once SEAT-009 lands it — the smoke target is liveness while readiness does not yet exist). The full-scale burst runs against the deployed URL manually and before each release, because it is slow and needs the live target.

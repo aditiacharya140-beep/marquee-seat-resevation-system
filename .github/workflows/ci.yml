@@ -1,0 +1,125 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+# Dev-only values. The service refuses to boot without the four required secrets and
+# the three ADR-025 vertical settings, so every job that imports app.core.config needs
+# them; declared once here rather than per job.
+env:
+  PYTHON_VERSION: "3.13"
+  JWT_SECRET: ci-only-not-a-real-secret
+  ADMIN_EMAIL: admin@example.com
+  ADMIN_PASSWORD: ci-only-not-a-real-password
+  ALLOWED_EVENT_KINDS: cinema,concert
+  DEFAULT_EVENT_KIND: cinema
+  DEFAULT_CURRENCY: INR
+  DATABASE_URL: postgresql://seatres:seatres@localhost:5432/seatres
+  TEST_DATABASE_URL: postgresql://seatres:seatres@localhost:5432/seatres_test
+
+jobs:
+  lint-and-types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: mypy app
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16.15
+        env:
+          POSTGRES_USER: seatres
+          POSTGRES_PASSWORD: seatres
+          POSTGRES_DB: seatres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U seatres -d seatres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -e ".[dev]"
+      # Two databases, matching the local layout the suite is developed against.
+      - name: Create the test database
+        run: psql "$DATABASE_URL" -c 'CREATE DATABASE seatres_test'
+        env:
+          PGPASSWORD: seatres
+      - run: pytest
+
+  # The REQ-050 check: a clean checkout must build and come up. This job is why a
+  # working service does not fail elsewhere, so it asserts the whole container
+  # contract rather than only that the build exits zero.
+  container-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t seat-reservation:ci .
+
+      - name: Assert the image carries no tests, git metadata or env file
+        run: |
+          docker run --rm seat-reservation:ci ls -aA /app
+          for forbidden in /app/tests /app/burst /app/.git /app/.env /app/.env.example \
+                           /app/mds /app/pyproject.toml; do
+            if docker run --rm seat-reservation:ci test -e "$forbidden"; then
+              echo "::error::$forbidden is present in the image"
+              exit 1
+            fi
+          done
+
+      - name: Assert the container refuses to boot without a required secret
+        run: |
+          # No DATABASE_URL. A service that booted with a built-in default here would
+          # be worse than one that refuses, so the refusal is the behaviour under test.
+          if output=$(docker run --rm \
+                -e JWT_SECRET -e ADMIN_EMAIL -e ADMIN_PASSWORD \
+                -e ALLOWED_EVENT_KINDS -e DEFAULT_EVENT_KIND -e DEFAULT_CURRENCY \
+                seat-reservation:ci 2>&1); then
+            echo "::error::the container booted without DATABASE_URL"
+            exit 1
+          fi
+          echo "$output"
+          grep -Fq 'DATABASE_URL' <<<"$output"
+
+      # DATABASE_URL points at nothing reachable from inside the container, and the
+      # service still comes up: /healthz is liveness. /readyz, which is the gate that
+      # does need a database, arrives in SEAT-009 and belongs in this job then.
+      - name: Run the built image on a non-default PORT
+        run: |
+          docker run -d --name smoke -p 9123:9123 -e PORT=9123 \
+            -e DATABASE_URL -e JWT_SECRET -e ADMIN_EMAIL -e ADMIN_PASSWORD \
+            -e ALLOWED_EVENT_KINDS -e DEFAULT_EVENT_KIND -e DEFAULT_CURRENCY \
+            seat-reservation:ci
+
+      - name: Assert /healthz returns 200
+        run: |
+          for _ in $(seq 30); do
+            if curl -fsS http://127.0.0.1:9123/healthz; then exit 0; fi
+            sleep 1
+          done
+          echo "::error::/healthz never returned 200"
+          exit 1
+
+      - name: Assert the server runs non-root as uvicorn PID 1
+        run: |
+          test "$(docker exec smoke id -un)" = appuser
+          docker exec smoke cat /proc/1/cmdline | tr '\0' ' ' | tee /dev/stderr \
+            | grep -Fq uvicorn
+
+      - name: Container logs
+        if: always()
+        run: docker logs smoke

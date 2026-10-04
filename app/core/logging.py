@@ -5,6 +5,7 @@ are queried, not read (mds/08-error-logging.md).
 """
 
 import logging
+import re
 import sys
 import traceback
 from datetime import UTC, datetime
@@ -13,7 +14,7 @@ from typing import Any, Final
 import orjson
 
 from app.core.config import settings
-from app.core.constants import REDACTED, REDACTED_LOG_KEYS, SERVICE_NAME, LogLevel
+from app.core.constants import REDACTED, REDACTED_LOG_KEY_ATOMS, SERVICE_NAME, LogLevel
 from app.core.context import get_request_id
 
 #: Attributes the stdlib puts on every record; anything else came from `extra=`.
@@ -47,10 +48,24 @@ _RECORD_ATTRS: Final = frozenset(
 )
 
 
+_DSN_CREDENTIALS = re.compile(r"(?P<scheme>[a-zA-Z][\w+.-]*://)(?P<user>[^:/@\s]+):[^@/\s]+@")
+
+
+def _scrub_text(text: str) -> str:
+    """Remove URL credentials from free text.
+
+    `message` and `stack` are strings, so the key filter cannot reach them, and a driver
+    error routinely carries the DSN it failed to connect with.
+    """
+    return _DSN_CREDENTIALS.sub(rf"\g<scheme>\g<user>:{REDACTED}@", text)
+
+
 def _redact(value: Any) -> Any:
     if isinstance(value, dict):
         return {
-            key: REDACTED if str(key).lower() in REDACTED_LOG_KEYS else _redact(item)
+            key: REDACTED
+            if any(atom in str(key).lower() for atom in REDACTED_LOG_KEY_ATOMS)
+            else _redact(item)
             for key, item in value.items()
         }
     if isinstance(value, list | tuple):
@@ -79,12 +94,14 @@ class JsonFormatter(logging.Formatter):
         # A foreign library logs sentences; keep `event` queryable and move the text.
         if not (text.isidentifier() and text.islower()):
             payload["event"] = record.name.replace(".", "_")
-            payload["message"] = text
+            payload["message"] = _scrub_text(text)
 
         payload.update(_redact(extra))
 
         if record.exc_info:
-            payload["stack"] = "".join(traceback.format_exception(*record.exc_info)).strip()
+            payload["stack"] = _scrub_text(
+                "".join(traceback.format_exception(*record.exc_info)).strip()
+            )
 
         return orjson.dumps(payload, default=str).decode()
 

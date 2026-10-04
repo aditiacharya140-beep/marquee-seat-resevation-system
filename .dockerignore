@@ -1,5 +1,6 @@
 .git
 .gitignore
+.github
 .venv
 venv
 __pycache__
@@ -9,13 +10,19 @@ __pycache__
 .ruff_cache
 .coverage
 htmlcov
+*.egg-info
 tests
 burst
 mds
+scripts
 .claude
+Makefile
+Dockerfile
+docker-compose.yml
+# Both the real file and the template stay out: nothing in the image should look like
+# a baked-in credential, and the runtime reads its configuration from the environment.
 .env
 .env.*
-!.env.example
 *.log
 pgdata
 .DS_Store
