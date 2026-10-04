@@ -109,6 +109,7 @@ curl -s $BASE/metrics | grep -E 'reservations_|seats_available'
 | `POST` | `/auth/upgrade` | guest | same account gains an email and password; its bookings stay |
 | `GET` | `/auth/me` | any principal | |
 | `POST` | `/shows` | admin | show and all its seats, one transaction; `seat_overrides` for per-seat price |
+| `DELETE` | `/shows/{id}` | admin | removes the show, its seats and every reservation on it; no undo |
 | `GET` | `/shows` | public | paginated catalogue, newest first |
 | `GET` | `/shows/{id}` | public | seat map and counts from one snapshot |
 | `POST` | `/shows/{id}/reserve` | any principal | **the atomic claim**; `Idempotency-Key` required |
@@ -122,7 +123,8 @@ curl -s $BASE/metrics | grep -E 'reservations_|seats_available'
 
 Interactive docs at `/docs`.
 
-Each burst leaves its show behind, and the API cannot delete one. To remove them and
+Each burst leaves its show behind. An admin can delete one from the admin console's
+Shows tab, or with `DELETE /shows/{id}`. To remove all of them at once, and
 everything booked on them, along with the accounts `--accounts` registered, straight
 from the database (asks before deleting):
 
@@ -188,16 +190,17 @@ mds/                the design, kept in step with the code — start at mds/00-o
 | Tab | Shows |
 |---|---|
 | **Overview** | Requests, successes, declines and server errors over a chosen window; requests per minute; declines by reason; latency (p50/p95) per route; database connections in use; the audit buffer; every counter |
-| **Shows** | Create a show; recent shows with seats available |
+| **Shows** | Create a show; recent shows with seats available; delete a show and everything booked on it |
 | **Audit trail** | One row per request: time, route, status, duration, outcome, who, which seats, request id. Filter by status, outcome, request id or show. Click a request id to see its log lines |
 | **Logs** | The service's structured log lines, newest first, filterable by level, event and request id |
 
 The admin sign-in is published here on purpose, so a reviewer can create shows and
 watch a burst without asking. The account's password is reset to the configured one
 every time the service starts. **Anyone can therefore act as admin on this demo**:
-they can create shows and read the audit trail and logs. They cannot read a password
-or a token — those are redacted before a line is stored — and there is no endpoint
-that deletes or edits anything.
+they can create shows, **delete shows along with every booking on them**, and read
+the audit trail and logs. They cannot read a password or a token — those are redacted
+before a line is stored. If a show you were testing against disappears, this is why;
+create another.
 
 The log view is this process's most recent 2,000 lines, held in memory: it empties
 when the service restarts, which on the free tier includes every wake from sleep. The

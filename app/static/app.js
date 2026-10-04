@@ -618,6 +618,8 @@ function renderBookings() {
   $('btn-more-bookings').hidden = !state.bookingsCursor;
   $('booking-list').replaceChildren(...bookings.map((booking) => {
     const held = booking.status === 'held';
+    // The owner can cancel a confirmed booking as well as a live hold.
+    const cancellable = held || booking.status === 'confirmed';
     const act = (verb) => h('button', {
       class: `btn small${verb === 'confirm' ? ' primary' : ''}`,
       type: 'button',
@@ -641,15 +643,22 @@ function renderBookings() {
           countdown(Math.max(secondsLeft(booking), 0))),
         h('span', { class: `badge ${booking.status}` }, STATUS_TEXT[booking.status]),
         held && act('confirm'),
-        held && act('cancel')));
+        cancellable && act('cancel')));
   }));
 }
 
 async function settle(booking, verb, button) {
+  // A confirmed booking is given up for good, so that one is asked about first.
+  if (verb === 'cancel' && booking.status === 'confirmed'
+      && !window.confirm(`Cancel your booking for ${listOf(booking.seats)}? The seats go back on sale.`)) {
+    return;
+  }
   button.disabled = true;
   try {
     await api('POST', `/reservations/${booking.reservation_id}/${verb}`);
-    toast(verb === 'confirm' ? `${listOf(booking.seats)} confirmed.` : 'Hold cancelled.', 'ok');
+    const cancelled = booking.status === 'confirmed'
+      ? 'Booking cancelled. The seats are available again.' : 'Hold cancelled.';
+    toast(verb === 'confirm' ? `${listOf(booking.seats)} confirmed.` : cancelled, 'ok');
   } catch (error) {
     fail(error);
   }

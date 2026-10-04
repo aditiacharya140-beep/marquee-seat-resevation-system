@@ -3,6 +3,8 @@
 .tag { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
        color: var(--accent); border: 1px solid var(--accent); border-radius: 6px; padding: 1px 7px; }
 .error { color: var(--red); min-height: 1em; }
+.btn.danger { color: var(--red); border-color: var(--red); background: none; }
+.btn.danger:hover { background: var(--red); color: var(--bg); }
 
 .tabs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
         border-bottom: 1px solid var(--line); padding-bottom: 10px; }

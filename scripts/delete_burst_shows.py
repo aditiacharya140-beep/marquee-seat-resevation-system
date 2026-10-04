@@ -2,7 +2,9 @@
 
     python scripts/delete_burst_shows.py [DATABASE_URL] [--yes]
 
-The API cannot close or delete a show, so this talks to the database: `DATABASE_URL`
+An admin can delete one show at a time through the API (`DELETE /shows/{id}`). This
+removes every burst show at once, and the accounts a burst registered, so it talks to
+the database: `DATABASE_URL`
 from the argument, the environment, or ./.env, in that order. For the live service that
 is the database's *external* URL from the Render dashboard.
 

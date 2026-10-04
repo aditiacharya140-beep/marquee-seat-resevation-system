@@ -174,7 +174,7 @@ fires whenever the product succeeds gets muted.
 
 ## Evidence
 
-- **326 tests, 96% line and branch coverage of `app/`**, all against real PostgreSQL
+- **328 tests, 96% line and branch coverage of `app/`**, all against real PostgreSQL
   with the real migration; nothing is mocked. They have only ever run on the
   development machine: GitHub Actions is not enabled for the repository.
 - `tests/concurrency/` — one test per invariant against real PostgreSQL: hot seat (60
@@ -278,7 +278,7 @@ and the differences matter to anyone testing it.
 | Rate limiting | **off** | on | A load test from one machine is never throttled. Nor is abuse: the per-user limit can be sidestepped by creating guests |
 | Access token lifetime | **1 hour** | 15 minutes, with refresh | A long test does not lose its tokens mid-run. After an hour a request answers `401 UNAUTHENTICATED` and the client must sign in again — or refresh, if it registered |
 | Guest token lifetime | 1 hour | 1 hour | A guest cannot refresh. The session ends |
-| Admin credentials | **published in the README**, reset at every start | secret | Anyone can create shows and read the audit trail and logs. Nothing can be deleted, and no secret is ever logged |
+| Admin credentials | **published in the README**, reset at every start | secret | Anyone can create or delete shows — deleting one removes every booking on it — and read the audit trail and logs. No secret is ever logged |
 | Instance | free: a fraction of a CPU, sleeps when idle | sized for the on-sale | About 19 bookings a second. A 20,000-request burst will be timed out by clients and by the platform's proxy long before the service has answered it |
 | Database pool | 20 | sized to the database | Requests beyond that wait for a connection rather than fail |
 | Processes | 1 | several | Counters, rate-limit buckets and the log view are per process and reset on restart |

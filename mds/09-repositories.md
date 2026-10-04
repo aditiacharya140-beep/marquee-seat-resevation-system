@@ -46,9 +46,10 @@ get_show(conn, show_id)                                            -> Show | Non
 list_shows(conn, *, status, event_kind, after, limit)              -> list[Show]
 list_seats(conn, show)                                             -> list[SeatView]
 available_by_show(conn, max_shows)                                 -> dict[UUID, int]
+delete_show(conn, show_id)                                         -> dict[str, int] | None
 ```
 
-`create_show` inserts every seat in one statement from `unnest` arrays. `list_seats` returns every seat with its **effective** status from one statement; the counts in `GET /shows/{id}` are tallied from those same rows, which is why they cannot disagree with the seat list or fail to sum to the total. `list_shows` is keyset-paginated on `(created_at, id)` and never touches `seats`. `available_by_show` feeds the gauge at scrape time, using the claim's own predicate.
+`create_show` inserts every seat in one statement from `unnest` arrays. `list_seats` returns every seat with its **effective** status from one statement; the counts in `GET /shows/{id}` are tallied from those same rows, which is why they cannot disagree with the seat list or fail to sum to the total. `list_shows` is keyset-paginated on `(created_at, id)` and never touches `seats`. `available_by_show` feeds the gauge at scrape time, using the claim's own predicate. `delete_show` locks the show row first, then removes its reservations, their claim rows and idempotency keys, and the show; seats and quota rows cascade. Every claim holds a key-share lock on the show row from its quota insert, so a delete waits for claims in flight and later claims find no show (ADR-043).
 
 ### `seat_repo.py`
 

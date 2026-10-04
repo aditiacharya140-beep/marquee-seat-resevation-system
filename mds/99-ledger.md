@@ -987,7 +987,7 @@ Completes LEARN-018, by test against the live service from one machine:
 
 **Choice** At every start the service upserts the admin: the account named by `ADMIN_EMAIL` exists, is an admin, and has `ADMIN_PASSWORD`. For the demo those are `admin@example.com` / `seat-admin-2026`, published in the README and the write-up.
 
-**Consequences** Anyone can act as admin on the demo: create shows, read the audit trail and logs. Bounded by what an admin can do — nothing deletes or edits, and no secret reaches a log line. An earlier admin under a different email is not demoted. This is a demo decision and is the opposite of what a real deployment needs; the write-up says so.
+**Consequences** Anyone can act as admin on the demo: create shows, read the audit trail and logs. Bounded by what an admin can do (extended by ADR-043, which lets an admin delete a show) — at the time, nothing deleted or edits, and no secret reaches a log line. An earlier admin under a different email is not demoted. This is a demo decision and is the opposite of what a real deployment needs; the write-up says so.
 
 ## ADR-042 — Build the audit trail and an admin console; logs readable from it
 
@@ -1018,3 +1018,16 @@ The audit trail measures duration at the innermost layer. Over a local burst of 
 **Choice** (c). Browsing and seat selection need no session. Book and Hold open the account dialog when signed out, keep the selection, and carry out the booking once the person has registered or signed in. The page no longer calls `POST /auth/guest` or `/auth/upgrade`.
 
 **Consequences** A ticket bought through the page is tied to an account and reachable from any device by signing in. No visitor creates a `users` row by loading the page. The API is unchanged: REQ-003 and REQ-004 still hold, and the burst and the seed script still book as guests by default. `burst.sh --accounts` books as registered accounts instead, the way a page visitor does; registration shares the `auth` ceiling with login (ten a minute per address), so at the default setting that mode suits a few dozen buyers and a full-size run needs a deeper `RATE_LIMIT_AUTH` bucket on the target. This does **not** close RISK-014 — registration costs no more than a guest did, so the per-user limit is still per free principal. An anonymous visitor's reads are now rate limited by address rather than by principal.
+
+## ADR-043 — An admin can delete a show, and everything booked on it
+
+**Date** 2026-10-05
+
+**Context** Shows accumulated — every burst leaves one — and nothing in the API could remove them; a script against the database was the only way.
+
+**Choice** `DELETE /shows/{id}`, admin only, a hard delete in one transaction: the reservations on the show, their claim rows and their idempotency keys, then the show, with seats and quota rows cascading. Idempotency keys go so that a retry is not answered with a reservation that no longer exists. The admin console's Shows tab has a Delete button that says how many seats are booked and asks first.
+
+**Why it does not deadlock or strand a claim** The delete locks the show row first. Every claim takes a key-share lock on that row through the quota row's foreign key before it touches a seat, and holds it to commit. So the delete waits for claims already in flight, and a claim arriving later waits at its quota insert and then finds no show: 404 `SHOW_NOT_FOUND`. A test deletes a show in the middle of sixty concurrent reserves and allows only 201, 409 `SEAT_TAKEN` and 404.
+
+**Consequences** There is no undo, no soft delete and no refund, because there is no payment. Audit rows for the show remain: the trail has no foreign keys. With the demo's admin sign-in published (ADR-041), anyone can delete a show on the live demo, including one a reviewer is testing against. Closing a show while keeping its bookings is still future scope.
+

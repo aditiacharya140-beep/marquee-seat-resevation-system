@@ -17,6 +17,7 @@ Every response, success or failure, carries `X-Request-ID`. Every failure uses t
 | `POST` | `/shows` | admin | key optional | `admin` | `shows.py` |
 | `GET` | `/shows` | public | yes | `read` | `shows.py` |
 | `GET` | `/shows/{show_id}` | public | yes | `read` | `shows.py` |
+| `DELETE` | `/shows/{show_id}` | admin | yes | `read` | `shows.py` |
 | `POST` | `/shows/{show_id}/reserve` | any principal | **key required** | `reserve` | `reservations.py` |
 | `POST` | `/reservations/{id}/confirm` | owner | yes | `reserve` | `reservations.py` |
 | `POST` | `/reservations/{id}/cancel` | owner | yes | `reserve` | `reservations.py` |
@@ -160,6 +161,14 @@ A seat whose hold has lapsed reports `available`, matching what a claim would se
 A `held` seat arises only from a reserve that opted into a hold; a default reserve goes straight to `confirmed`. All three states are reachable, which is what makes this contract honoured by behaviour rather than by a status nothing produces.
 
 `404 SHOW_NOT_FOUND`
+
+### `DELETE /shows/{show_id}` — admin
+
+**200** `{ "show_id": "…", "deleted": { "reservations": 2, "seats": 3 } }`
+
+Removes the show, its seats, every reservation on it and the idempotency keys of those reservations, in one transaction. **There is no undo and no refund step.** A reserve in flight either completes before the delete or answers 404 `SHOW_NOT_FOUND`; none is left half-applied (ADR-043).
+
+`404 SHOW_NOT_FOUND` · `403 FORBIDDEN` · `401 UNAUTHENTICATED`
 
 ### `GET /shows`
 

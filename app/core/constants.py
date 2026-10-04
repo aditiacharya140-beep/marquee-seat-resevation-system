@@ -79,6 +79,7 @@ class LogEvent(StrEnum):
     UNHANDLED_EXCEPTION = "unhandled_exception"
     UNHANDLED_HTTP_EXCEPTION = "unhandled_http_exception"
     READINESS_CHECK_FAILED = "readiness_check_failed"
+    SHOW_DELETED = "show_deleted"
     RESERVATION_CREATED = "reservation_created"
     RESERVATION_CANCELLED = "reservation_cancelled"
     RESERVATION_CONFIRMED = "reservation_confirmed"

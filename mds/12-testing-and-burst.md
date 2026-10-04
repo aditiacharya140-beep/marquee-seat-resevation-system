@@ -6,7 +6,7 @@ The governing principle: a test that would still pass against a read-then-write 
 
 ## How the suite runs
 
-`pytest`, 326 tests, about 16 seconds. Coverage of `app/` is 96% of lines and branches (`coverage run --branch --source=app -m pytest`).
+`pytest`, 328 tests, about 16 seconds. Coverage of `app/` is 96% of lines and branches (`coverage run --branch --source=app -m pytest`).
 
 - The application is driven in-process through `httpx.ASGITransport` — the real app factory, middleware chain and handlers — against `TEST_DATABASE_URL`, never the development database.
 - The schema comes from the **real migration**, run by the same Alembic command the container entrypoint uses.

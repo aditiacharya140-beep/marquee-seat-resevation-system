@@ -182,3 +182,35 @@ async def test_a_lapsed_hold_is_claimable_with_no_sweeper(
     assert outcomes(responses) == {(201, None): 1, (409, "SEAT_TAKEN"): 9}
     assert (late.status_code, error_code(late)) == (409, "RESERVATION_EXPIRED")
     assert (await counts(client, show["show_id"]))["confirmed"] == 1
+
+
+async def test_deleting_a_show_under_a_burst_never_produces_a_5xx(
+    client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    new_show: Callable[..., Any],
+    new_guest: Callable[[], Any],
+) -> None:
+    """Claims in flight finish or find no show; none is left half-applied, and the
+    delete cannot deadlock against them because it takes the show row first."""
+    seats = [f"D{i:02d}" for i in range(30)]
+    show = await new_show(seats)
+    principals = await guests(new_guest, 60)
+    faults_before = unhandled_total()
+
+    async def delete_soon() -> httpx.Response:
+        await asyncio.sleep(0.01)
+        return await client.delete(f"/shows/{show['show_id']}", headers=admin_headers)
+
+    *responses, deleted = await asyncio.gather(
+        *(
+            reserve(client, show["show_id"], headers, [seats[i % 30]])
+            for i, headers in enumerate(principals)
+        ),
+        delete_soon(),
+    )
+
+    assert deleted.status_code == 200, deleted.text
+    allowed = {(201, None), (409, "SEAT_TAKEN"), (404, "SHOW_NOT_FOUND")}
+    assert set(outcomes(responses)) <= allowed, outcomes(responses)
+    assert unhandled_total() == faults_before
+    assert (await client.get(f"/shows/{show['show_id']}")).status_code == 404

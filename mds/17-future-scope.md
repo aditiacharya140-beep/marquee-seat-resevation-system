@@ -44,7 +44,7 @@ Starlette's `ServerErrorMiddleware` re-raises after the 500 handler has answered
 
 ## 6. Show lifecycle
 
-- **Taking a show off sale.** `shows.status` has `draft`, `on_sale` and `closed`, and a reserve against anything but `on_sale` declines 409 `SHOW_NOT_ON_SALE` — but every show is created `on_sale` and no endpoint changes it.
+- **Taking a show off sale.** `shows.status` has `draft`, `on_sale` and `closed`, and a reserve against anything but `on_sale` declines 409 `SHOW_NOT_ON_SALE` — but every show is created `on_sale` and no endpoint changes it. An admin can **delete** a show (ADR-043), which is the blunt version: it removes the bookings too. Closing a show while keeping its bookings, and anything resembling a refund, are not built.
 - **Sale windows.** `shows.sales_open_at` and `sales_close_at` exist as columns and are never read.
 - **Admin override** on another principal's reservation: no route exists, by design, until one is asked for.
 
